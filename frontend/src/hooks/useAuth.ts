@@ -1,14 +1,37 @@
-// Placeholder auth hook. Returns static mock data until real auth (task-tracked
-// separately) is wired up to POST /api/v1/auth/login and GET /api/v1/auth/me.
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { apiClient } from "@/services/apiClient";
+import type { LoginResponse, User } from "@/types/models";
 
-export interface AuthState {
-  isAuthenticated: boolean;
-  user: { id: string; email: string; role: string } | null;
+const TOKEN_KEY = "access_token";
+
+export function useLogin() {
+  return useMutation({
+    mutationFn: async (credentials: { email: string; password: string }) => {
+      const { data } = await apiClient.post<LoginResponse>(
+        "/auth/login",
+        credentials
+      );
+      localStorage.setItem(TOKEN_KEY, data.access_token);
+      return data;
+    },
+  });
 }
 
-export function useAuth(): AuthState {
-  return {
-    isAuthenticated: false,
-    user: null,
-  };
+export function useLogout() {
+  return useMutation({
+    mutationFn: async () => {
+      await apiClient.post("/auth/logout");
+      localStorage.removeItem(TOKEN_KEY);
+    },
+  });
+}
+
+export function useCurrentUser() {
+  return useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: async () => {
+      const { data } = await apiClient.get<User>("/auth/me");
+      return data;
+    },
+  });
 }
