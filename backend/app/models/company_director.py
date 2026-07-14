@@ -12,7 +12,7 @@ class CompanyDirector(Base):
     __tablename__ = "company_directors"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), index=True)
+    company_id: Mapped[str] = mapped_column(String(100), ForeignKey("companies.id"), index=True)
 
     full_name: Mapped[str] = mapped_column(String(255))
     role_title: Mapped[str | None] = mapped_column(String(150), nullable=True)

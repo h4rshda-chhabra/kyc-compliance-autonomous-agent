@@ -1,144 +1,124 @@
-// TypeScript mirrors of backend/app/models/*.py — kept in sync manually until
-// a schema generator is wired up. No client-side logic here, types only.
+// Mirrors backend/app/models/*.py 1:1 (SQLAlchemy → JSON). IDs are UUIDs,
+// serialized as strings. Statuses the backend leaves as free strings are
+// typed as string here; known values are listed in the comments.
 
-export type UUID = string;
-export type ISODateTime = string;
-
-export interface User {
-  id: UUID;
-  email: string;
-  full_name: string;
-  role: string;
-  is_active: boolean;
-  created_at: ISODateTime;
-  updated_at: ISODateTime;
-}
+/** Backend default is "unknown"; scoring produces low/medium/high/critical. */
+export type RiskLevel = "unknown" | "low" | "medium" | "high" | "critical";
 
 export interface Company {
-  id: UUID;
+  /** OpenSanctions/OFAC entity id (e.g. "NK-...", "OFAC-36") — the company
+   *  directory is served straight from the sanctions dataset. */
+  id: string;
   legal_name: string;
   registration_number: string | null;
   jurisdiction: string | null;
   industry: string | null;
+  /** e.g. "not_monitored" (directory only), "onboarding", "active", "escalated" */
   monitoring_status: string;
-  risk_level: string;
-  onboarded_at: ISODateTime | null;
-  created_at: ISODateTime;
-  updated_at: ISODateTime;
-}
-
-export interface CompanyDirector {
-  id: UUID;
-  company_id: UUID;
-  full_name: string;
-  role_title: string | null;
-  nationality: string | null;
-  date_of_birth: string | null;
-  is_pep: boolean;
-  created_at: ISODateTime;
+  risk_level: RiskLevel;
+  onboarded_at: string | null;
+  /** null until the company has been scanned (no Postgres row yet). */
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface MonitoringRun {
-  id: UUID;
-  company_id: UUID;
+  id: string;
+  company_id: string;
+  /** e.g. "scheduled", "manual", "event_driven" */
   trigger_type: string;
+  /** e.g. "queued" (default), "running", "completed", "failed" */
   status: string;
   summary: string | null;
-  started_at: ISODateTime | null;
-  completed_at: ISODateTime | null;
-  created_at: ISODateTime;
-}
-
-export interface NewsArticle {
-  id: UUID;
-  company_id: UUID;
-  monitoring_run_id: UUID | null;
-  title: string;
-  url: string;
-  source: string | null;
-  sentiment: string | null;
-  published_at: ISODateTime | null;
-  created_at: ISODateTime;
-}
-
-export interface SanctionMatch {
-  id: UUID;
-  company_id: UUID;
-  monitoring_run_id: UUID | null;
-  list_name: string;
-  matched_name: string;
-  match_score: number;
-  status: string;
-  created_at: ISODateTime;
-}
-
-export interface WatchlistMatch {
-  id: UUID;
-  company_id: UUID;
-  monitoring_run_id: UUID | null;
-  watchlist_name: string;
-  matched_name: string;
-  match_score: number;
-  status: string;
-  created_at: ISODateTime;
-}
-
-export interface Evidence {
-  id: UUID;
-  company_id: UUID;
-  monitoring_run_id: UUID | null;
-  evidence_type: string;
-  source_url: string | null;
-  content: string | null;
-  collected_at: ISODateTime;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
 }
 
 export interface RiskReport {
-  id: UUID;
-  company_id: UUID;
-  monitoring_run_id: UUID | null;
+  id: string;
+  company_id: string;
+  monitoring_run_id: string | null;
   risk_score: number;
-  risk_level: string;
+  risk_level: RiskLevel;
   rationale: string | null;
-  created_at: ISODateTime;
-}
-
-export interface TimelineEvent {
-  id: UUID;
-  company_id: UUID;
-  event_type: string;
-  description: string | null;
-  occurred_at: ISODateTime;
-  created_at: ISODateTime;
-}
-
-export interface SARReport {
-  id: UUID;
-  company_id: UUID;
-  monitoring_run_id: UUID | null;
-  status: string;
-  narrative: string | null;
-  filed_at: ISODateTime | null;
-  created_at: ISODateTime;
+  created_at: string;
 }
 
 export interface HumanReview {
-  id: UUID;
-  company_id: UUID;
-  monitoring_run_id: UUID | null;
-  reviewer_id: UUID | null;
+  id: string;
+  company_id: string;
+  monitoring_run_id: string | null;
+  reviewer_id: string | null;
+  /** e.g. "approved", "rejected", "escalated" */
   decision: string | null;
   notes: string | null;
-  reviewed_at: ISODateTime | null;
-  created_at: ISODateTime;
+  reviewed_at: string | null;
+  created_at: string;
+}
+
+export interface SARReport {
+  id: string;
+  company_id: string;
+  monitoring_run_id: string | null;
+  /** e.g. "draft" (default), "pending_review", "approved", "rejected", "filed" */
+  status: string;
+  narrative: string | null;
+  filed_at: string | null;
+  created_at: string;
+}
+
+export interface Evidence {
+  id: string;
+  company_id: string;
+  monitoring_run_id: string | null;
+  /** e.g. "news", "sanction", "registry", "court" */
+  evidence_type: string;
+  source_url: string | null;
+  content: string | null;
+  collected_at: string;
+}
+
+export interface TimelineEvent {
+  id: string;
+  company_id: string;
+  event_type: string;
+  description: string | null;
+  occurred_at: string;
+  created_at: string;
 }
 
 export interface AuditLog {
-  id: UUID;
+  id: string;
   actor: string;
   action: string;
   resource_type: string;
   resource_id: string | null;
   event_metadata: Record<string, unknown> | null;
-  created_at: ISODateTime;
+  created_at: string;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  full_name: string;
+  /** e.g. "reviewer" (default), "admin" */
+  role: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Shape of GET /dashboard/summary (routes/dashboard.py). */
+export interface DashboardSummary {
+  total_companies: number;
+  active_monitoring: number;
+  escalated: number;
+  open_reviews: number;
+}
+
+/** Shape of POST /auth/login (routes/auth.py). */
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
 }
