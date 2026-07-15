@@ -33,9 +33,14 @@ def get_summary(db: Session = Depends(get_db)) -> dict:
         or 0
     )
 
+    from app.config import get_settings
+    settings = get_settings()
+
     return {
         "total_companies": total_companies,
         "active_monitoring": active_monitoring,
         "escalated": escalated,
         "open_reviews": open_reviews,
+        "demo_mode": settings.demo_mode,
     }
+

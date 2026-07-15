@@ -110,18 +110,12 @@ def calculate_database_diff(old_db_path: Path, new_db_path: Path) -> Tuple[int, 
         cur.execute(f"ATTACH DATABASE ? AS old_db", (old_abs_path,))
 
         # 1. Fetch added entity IDs (in new but not in old)
-        cur.execute("""
-            SELECT id FROM entities
-            WHERE id NOT IN (SELECT id FROM old_db.entities)
-        """)
+        cur.execute("SELECT id FROM entities EXCEPT SELECT id FROM old_db.entities")
         added_ids = [row[0] for row in cur.fetchall()]
         added = len(added_ids)
 
         # 2. Fetch removed entity IDs (in old but not in new)
-        cur.execute("""
-            SELECT id FROM old_db.entities
-            WHERE id NOT IN (SELECT id FROM entities)
-        """)
+        cur.execute("SELECT id FROM old_db.entities EXCEPT SELECT id FROM entities")
         removed_ids = [row[0] for row in cur.fetchall()]
         removed = len(removed_ids)
 
@@ -185,8 +179,44 @@ def run_sanctions_sync(feed_url: Optional[str] = None) -> Dict[str, Any]:
     removed_ids = []
 
     try:
-        # Step 1: Ingestion (Download Feed)
-        if feed_url:
+        # Step 1: Ingestion (Download Feed / Prepare Demo)
+        if feed_url == "demo_mode":
+            logger.info("[DEMO MODE] Preparing demo database with mock sanctions for Theranos Inc and Elizabeth Holmes...")
+            if active_path.exists():
+                # To ensure a delta is ALWAYS detected (even if the demo button is clicked multiple times),
+                # we delete the mock entities from the active database first if they exist.
+                conn_active = sqlite3.connect(active_path)
+                cur_active = conn_active.cursor()
+                try:
+                    cur_active.execute("DELETE FROM entities WHERE id IN ('DEMO-OFAC-THERANOS', 'DEMO-OFAC-HOLMES')")
+                    conn_active.commit()
+                finally:
+                    conn_active.close()
+
+                shutil.copy2(active_path, temp_path)
+                
+                # Insert mock sanctions into the temp version file to simulate the watchlist update
+                conn = sqlite3.connect(temp_path)
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "INSERT OR REPLACE INTO entities (id, name, type, source) VALUES (?, ?, ?, ?)",
+                        ("DEMO-OFAC-THERANOS", "THERANOS INC", "Company", "US OFAC Specially Designated Nationals List")
+                    )
+                    cur.execute(
+                        "INSERT OR REPLACE INTO entities (id, name, type, source) VALUES (?, ?, ?, ?)",
+                        ("DEMO-OFAC-HOLMES", "Elizabeth Holmes", "Person", "US OFAC Specially Designated Nationals List")
+                    )
+                    conn.commit()
+                    logger.info("[DEMO MODE] Seeding of mock watchlist entities complete.")
+                finally:
+                    conn.close()
+            else:
+                return {
+                    "success": False,
+                    "reason": "Active database file not found, cannot seed demo database.",
+                }
+        elif feed_url:
             logger.info("Downloading live sanctions feed from %s...", feed_url)
             with httpx.Client(timeout=60.0) as client:
                 response = client.get(feed_url)

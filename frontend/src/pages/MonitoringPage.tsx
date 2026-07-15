@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCompanies } from "@/hooks/useCompanies";
+import { useDashboardSummary } from "@/hooks/useDashboardSummary";
 import {
   useMonitoringRuns,
   useSanctionsSyncHistory,
@@ -28,6 +29,7 @@ export function MonitoringPage() {
   const { data: runs, isLoading: isRunsLoading, isError: isRunsError, refetch: refetchRuns } = useMonitoringRuns();
   const { data: syncLogs, isLoading: isLogsLoading, isError: isLogsError, refetch: refetchLogs } = useSanctionsSyncHistory();
   const { data: companies } = useCompanies();
+  const { data: summary } = useDashboardSummary();
   const triggerSync = useTriggerSanctionsSync();
 
   const [activeTab, setActiveTab] = useState("runs");
@@ -43,6 +45,15 @@ export function MonitoringPage() {
     }
   };
 
+  const handleDemoClick = async () => {
+    try {
+      await triggerSync.mutateAsync("demo_mode");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -50,13 +61,28 @@ export function MonitoringPage() {
         description="Monitor automated run execution sweeps and manage sanctions database synchronization."
         action={
           activeTab === "sync" && (
-            <Button disabled={triggerSync.isPending} onClick={handleSyncClick}>
-              <RefreshCw
-                data-icon="inline-start"
-                className={triggerSync.isPending ? "animate-spin" : undefined}
-              />
-              {triggerSync.isPending ? "Syncing..." : "Sync Watchlists Now"}
-            </Button>
+            <div className="flex items-center gap-2">
+              {summary?.demo_mode && (
+                <Button
+                  variant="secondary"
+                  disabled={triggerSync.isPending}
+                  onClick={handleDemoClick}
+                >
+                  <RefreshCw
+                    data-icon="inline-start"
+                    className={triggerSync.isPending ? "animate-spin" : undefined}
+                  />
+                  {triggerSync.isPending ? "Running Demo..." : "Run Demo Scenario"}
+                </Button>
+              )}
+              <Button disabled={triggerSync.isPending} onClick={handleSyncClick}>
+                <RefreshCw
+                  data-icon="inline-start"
+                  className={triggerSync.isPending ? "animate-spin" : undefined}
+                />
+                {triggerSync.isPending ? "Syncing..." : "Sync Watchlists Now"}
+              </Button>
+            </div>
           )
         }
       />

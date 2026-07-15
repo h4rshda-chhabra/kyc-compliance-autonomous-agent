@@ -118,6 +118,7 @@ export interface DashboardSummary {
   active_monitoring: number;
   escalated: number;
   open_reviews: number;
+  demo_mode?: boolean;
 }
 
 /** Shape of POST /auth/login (routes/auth.py). */
