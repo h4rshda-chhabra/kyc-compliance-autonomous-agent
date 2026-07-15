@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/PasswordInput";
+import { apiClient } from "@/services/apiClient";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -26,6 +27,7 @@ export function SignupPage() {
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [errors, setErrors] = useState<SignupErrors>({});
   const [submitting, setSubmitting] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -38,9 +40,23 @@ export function SignupPage() {
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
-    // No auth endpoint exists in the backend contract yet — simulate sign-up
+    // Call backend registration endpoint
     setSubmitting(true);
-    setTimeout(() => navigate("/"), 600);
+    setApiError(null);
+    apiClient.post("/auth/register", {
+      email: email.trim(),
+      password,
+      full_name: name.trim(),
+      role: "reviewer"
+    })
+    .then(() => {
+      navigate("/login");
+    })
+    .catch((err: any) => {
+      const msg = err.response?.data?.detail || "An unexpected error occurred during registration.";
+      setApiError(msg);
+      setSubmitting(false);
+    });
   }
 
   return (
@@ -132,6 +148,10 @@ export function SignupPage() {
             <p className="text-xs text-destructive">{errors.terms}</p>
           ) : null}
         </div>
+
+        {apiError && (
+          <p className="text-sm font-medium text-destructive">{apiError}</p>
+        )}
 
         <Button type="submit" size="lg" className="w-full" disabled={submitting}>
           {submitting ? (

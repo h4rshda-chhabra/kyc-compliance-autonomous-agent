@@ -22,6 +22,7 @@ try:
     from app.models.timeline_event import TimelineEvent
     from app.models.sar_report import SARReport
     from app.models.human_review import HumanReview
+    from app.core.security import get_password_hash
     from rapidfuzz import fuzz
 except ImportError as e:
     print(f"Error importing modules: {e}")
@@ -108,7 +109,7 @@ def seed():
         demo_user = User(
             id=uuid.uuid4(),
             email="demo@example.com",
-            hashed_password="hashed_placeholder_for_demo",  # No custom auth package, keeps simplicity
+            hashed_password=get_password_hash("password123"),
             full_name="Demo Auditor Analyst",
             role="reviewer",
             is_active=True
