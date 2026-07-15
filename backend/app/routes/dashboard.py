@@ -1,17 +1,37 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from app.database.session import get_db
-from app.models.company import Company
+
+from app.database import get_db
+from app.models import Company, SARReport
+from app.services.company_directory import count_companies
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("/summary")
 def get_summary(db: Session = Depends(get_db)) -> dict:
-    total_companies = db.query(Company).count()
-    active_monitoring = db.query(Company).filter(Company.monitoring_status == "monitored").count()
-    escalated = db.query(Company).filter(Company.monitoring_status == "escalated").count()
-    open_reviews = db.query(Company).filter(Company.monitoring_status == "review").count()
+    # Directory size comes straight from the sanctions dataset; the other
+    # counts reflect live monitoring state in Postgres.
+    total_companies = count_companies()
+    active_monitoring = (
+        db.query(func.count(Company.id))
+        .filter(Company.monitoring_status == "active")
+        .scalar()
+        or 0
+    )
+    escalated = (
+        db.query(func.count(Company.id))
+        .filter(Company.monitoring_status == "escalated")
+        .scalar()
+        or 0
+    )
+    open_reviews = (
+        db.query(func.count(SARReport.id))
+        .filter(SARReport.status == "pending_review")
+        .scalar()
+        or 0
+    )
 
     return {
         "total_companies": total_companies,
@@ -19,4 +39,3 @@ def get_summary(db: Session = Depends(get_db)) -> dict:
         "escalated": escalated,
         "open_reviews": open_reviews,
     }
-

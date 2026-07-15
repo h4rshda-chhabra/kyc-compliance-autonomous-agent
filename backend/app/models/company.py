@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, String
@@ -9,9 +8,17 @@ from app.database.base import Base
 
 
 class Company(Base):
+    """A monitored company, materialized on first scan.
+
+    `id` is the OpenSanctions/OFAC entity id (e.g. "NK-..." / "OFAC-36") from
+    datasets/processed/sanctions_lookup.db — the companies directory is served
+    straight from that dataset, and a row lands here only once the company is
+    actually scanned/monitored.
+    """
+
     __tablename__ = "companies"
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
     legal_name: Mapped[str] = mapped_column(String(255), index=True)
     registration_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     jurisdiction: Mapped[str | None] = mapped_column(String(100), nullable=True)

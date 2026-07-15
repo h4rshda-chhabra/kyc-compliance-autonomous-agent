@@ -6,7 +6,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { apiClient } from "@/services/apiClient";
-import type { Company } from "@/types";
+import type { Company } from "@/types/models";
 
 interface AuditResult {
   run_id: string;

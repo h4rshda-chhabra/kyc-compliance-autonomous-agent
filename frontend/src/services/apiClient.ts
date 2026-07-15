@@ -1,30 +1,18 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
+import axios from "axios";
 
-export class ApiError extends Error {
-  status: number;
+const baseURL = `${import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"}/api/v1`;
 
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
+export const apiClient = axios.create({
+  baseURL,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+apiClient.interceptors.request.use((config) => {
+  const token = localStorage.getItem("access_token");
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-
-  if (!response.ok) {
-    throw new ApiError(response.status, `Request to ${path} failed with ${response.status}`);
-  }
-
-  return response.json() as Promise<T>;
-}
-
-export const apiClient = {
-  get: <T>(path: string) => request<T>(path, { method: "GET" }),
-  post: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
-};
+  return config;
+});

@@ -32,7 +32,7 @@ class AgentOrchestrator:
     """
 
     def __init__(self, company_id: str, db: Session) -> None:
-        self.company_id = uuid.UUID(company_id) if isinstance(company_id, str) else company_id
+        self.company_id = company_id
         self.db = db
         self.rss_service = RSSNewsService()
         self.resolver = EntityResolutionAgent()
@@ -140,6 +140,44 @@ class AgentOrchestrator:
 
         try:
             # 3. Step: Sanctions Screening & Entity Resolution
+            # Screen company name itself
+            company_raw_hits = self._get_sqlite_candidates(company.legal_name)
+            resolved_company = self.resolver.resolve_directors(
+                director_name=company.legal_name,
+                candidates=company_raw_hits,
+                nationality=company.jurisdiction,
+                dob=None
+            )
+            for hit in resolved_company:
+                san_match = SanctionMatch(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    list_name=hit["source"],
+                    matched_name=hit["name"],
+                    match_score=float(hit["resolution_score"]),
+                    status="pending_review"
+                )
+                self.db.add(san_match)
+                sanctions_alerts.append(hit)
+                
+                # Create Evidence record
+                evidence = Evidence(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    evidence_type="sanction",
+                    source_url=f"https://opensanctions.org/entities/{hit['id']}",
+                    content=f"Fuzzy resolution match {hit['resolution_score']}% found for company {company.legal_name} on global list {hit['source']}. Details: Name: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
+                )
+                self.db.add(evidence)
+
+                # Create Timeline event
+                timeline_events_data.append({
+                    "event_type": "sanction_match",
+                    "description": f"Company {company.legal_name} matched watchlist: {hit['name']} ({hit['source']})."
+                })
+
             for director in directors:
                 raw_hits = self._get_sqlite_candidates(director.full_name)
                 

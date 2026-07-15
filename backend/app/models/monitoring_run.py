@@ -12,7 +12,7 @@ class MonitoringRun(Base):
     __tablename__ = "monitoring_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), index=True)
+    company_id: Mapped[str] = mapped_column(String(100), ForeignKey("companies.id"), index=True)
 
     trigger_type: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(30), default="queued")

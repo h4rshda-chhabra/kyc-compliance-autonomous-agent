@@ -12,7 +12,7 @@ class SanctionMatch(Base):
     __tablename__ = "sanction_matches"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), index=True)
+    company_id: Mapped[str] = mapped_column(String(100), ForeignKey("companies.id"), index=True)
     monitoring_run_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("monitoring_runs.id"), nullable=True
     )
