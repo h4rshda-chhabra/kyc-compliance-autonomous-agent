@@ -140,3 +140,57 @@ Starts Postgres, backend (`:8000`), and frontend (`:5173`) together.
 | `npm run lint` | `frontend/` | Lint frontend |
 | `npm run format` | `frontend/` | Format frontend |
 | `docker-compose up --build` | repo root | Run the full stack |
+
+---
+
+## Hackathon Demo Guide
+
+### 1. API Keys & Configuration
+Copy `.env.example` to `.env` in the root directory:
+```bash
+cp .env.example .env
+```
+Fill in the `GEMINI_API_KEY` (or `OPENROUTER_API_KEY`) to enable the agent reasoning nodes.
+
+### 2. Preprocess Datasets
+Download the OpenSanctions and OFAC SDN delimited CSV lists into `datasets/processed/` as described in the setup, then build the pre-indexed SQLite lookup file:
+```bash
+python scripts/preprocess_datasets.py
+```
+
+### 3. Database Migration & Seeding
+Start your PostgreSQL instance and apply the Alembic database migrations:
+```bash
+# 1. Start Postgres service
+docker-compose up -d postgres
+
+# 2. Generate and apply SQLAlchemy tables schema
+cd backend
+alembic revision --autogenerate -m "initial_schema"
+alembic upgrade head
+cd ..
+
+# 3. Seed the demo customer profiles and sanction matches
+python scripts/seed_demo_data.py
+```
+
+### 4. Run Diagnostics Verification
+Run the diagnostics verification script to test system integrity:
+```bash
+python scripts/verify_demo.py
+```
+
+### 5. Expected Demo Outputs
+The seed script populates three specific profiles in the system database:
+* **TechNova Solutions Pvt Ltd** (Clean Profile):
+  * *Results*: No watchlist or media hits. Risk: **Low (15.0)**. Recommendation: **Approve**.
+* **Vostok Shipping Agency** (Sanctions Match):
+  * *Results*: Director *KIM, Yong Chol* matches an active entity on the OFAC SDN list. Risk: **High (95.0)**. Recommendation: **Reject**.
+* **Theranos Inc** (Adverse Media Match):
+  * *Results*: Director *Elizabeth Holmes* matches multiple negative news alerts. Risk: **Medium (65.0)**. Recommendation: **Manual Review**.
+
+### 6. Running the Stack
+Run the full local development stack (make sure ports `8000` and `5173` are free):
+* **Backend API**: Run `uvicorn app.main:app --reload` inside `/backend`.
+* **Frontend Portal**: Run `npm run dev` inside `/frontend` and access `http://localhost:5173`.
+

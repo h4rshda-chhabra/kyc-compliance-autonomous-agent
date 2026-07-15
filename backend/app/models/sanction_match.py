@@ -17,7 +17,7 @@ class SanctionMatch(Base):
         ForeignKey("monitoring_runs.id"), nullable=True
     )
 
-    list_name: Mapped[str] = mapped_column(String(150))
+    list_name: Mapped[str] = mapped_column(String(1000))
     matched_name: Mapped[str] = mapped_column(String(255))
     match_score: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(30), default="pending_review")

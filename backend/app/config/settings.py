@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     openrouter_api_key: str | None = None
 
+    # Adverse Media Ingestion
+    google_news_rss: str = "https://news.google.com/rss/search"
+    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
     # Scheduler
     scheduler_enabled: bool = True
 

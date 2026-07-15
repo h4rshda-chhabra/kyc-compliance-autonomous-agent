@@ -28,3 +28,6 @@ datasets/processed/*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Root virtual environment
+.venv/

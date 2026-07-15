@@ -11,6 +11,7 @@ import { Monitoring } from "@/pages/Monitoring";
 import { Risk } from "@/pages/Risk";
 import { SARReview } from "@/pages/SARReview";
 import { Timeline } from "@/pages/Timeline";
+import { AgentExecution } from "@/pages/AgentExecution";
 
 export const router = createBrowserRouter([
   {
@@ -24,6 +25,7 @@ export const router = createBrowserRouter([
       { index: true, element: <Dashboard /> },
       { path: "companies", element: <Companies /> },
       { path: "companies/:companyId", element: <CompanyDetails /> },
+      { path: "companies/:companyId/execute", element: <AgentExecution /> },
       { path: "monitoring", element: <Monitoring /> },
       { path: "risk", element: <Risk /> },
       { path: "timeline", element: <Timeline /> },
@@ -33,3 +35,4 @@ export const router = createBrowserRouter([
     ],
   },
 ]);
+
