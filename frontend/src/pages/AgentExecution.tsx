@@ -37,13 +37,19 @@ export function AgentExecution() {
   // Fetch company details to show on the header
   const { data: company } = useQuery({
     queryKey: ["company", companyId],
-    queryFn: () => apiClient.get<Company>(`/companies/${companyId}`),
+    queryFn: async () => {
+      const res = await apiClient.get<Company>(`/companies/${companyId}`);
+      return res.data;
+    },
     enabled: !!companyId,
   });
 
   // Call PostgreSQL trigger endpoint
   const mutation = useMutation({
-    mutationFn: () => apiClient.post<AuditResult>(`/monitor/companies/${companyId}/trigger`),
+    mutationFn: async () => {
+      const res = await apiClient.post<AuditResult>(`/monitor/companies/${companyId}/trigger`);
+      return res.data;
+    },
     onSuccess: (data) => {
       setLogs((prev) => [...prev, `[✓] Execution Complete! Run ID: ${data.run_id}`]);
       setLogs((prev) => [...prev, `[✓] Resolved Risk Score: ${data.risk_score}/100 (${data.risk_level.toUpperCase()})`]);

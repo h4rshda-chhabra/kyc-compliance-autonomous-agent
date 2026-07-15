@@ -43,12 +43,14 @@ export function CreateCompanyDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm" className="shrink-0 gap-1.5">
-          <Plus className="size-4" />
-          Add Company
-        </Button>
-      </DialogTrigger>
+      <DialogTrigger
+        render={
+          <Button size="sm" className="shrink-0 gap-1.5">
+            <Plus className="size-4" />
+            Add Company
+          </Button>
+        }
+      />
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>Add Custom Company</DialogTitle>
