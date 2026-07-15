@@ -12,7 +12,7 @@ import {
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { PageHeader } from "@/components/PageHeader";
-import { CompanyStatusBadge, NeedsReviewPulse, RiskBadge, SarStatusBadge } from "@/components/status-badges";
+import { MonitoringLifecycleBadge, NeedsReviewPulse, RiskBadge, SarStatusBadge } from "@/components/status-badges";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,9 +22,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { RiskGauge } from "@/components/charts/RiskGauge";
 import { useCompany, useUpdateCompanyCadence } from "@/hooks/useCompanies";
 import { useCompanyEvidence, useCompanyRiskReport, useCompanyTimeline } from "@/hooks/useReports";
-import { useTriggerMonitoringRun } from "@/hooks/useMonitoringRuns";
+import { useMonitoringRuns } from "@/hooks/useMonitoringRuns";
 import { useSarReports } from "@/hooks/useSarReports";
-import { previewLines } from "@/lib/utils";
+import { useCurrentUser } from "@/hooks/useAuth";
+import { evidenceTypeLabel, previewLines } from "@/lib/utils";
 
 
 function DetailRow({
@@ -47,9 +48,17 @@ function DetailRow({
   );
 }
 
+function formatCadence(minutes: number | undefined): string {
+  if (!minutes) return "—";
+  if (minutes < 60) return `Every ${minutes} minutes`;
+  if (minutes < 1440) return `Every ${minutes / 60} hour${minutes === 60 ? "" : "s"}`;
+  return `Every ${minutes / 1440} day${minutes === 1440 ? "" : "s"}`;
+}
+
 function OverviewTab({ companyId }: { companyId: string }) {
   const { data: company } = useCompany(companyId);
   const { data: riskReport, isLoading: riskLoading } = useCompanyRiskReport(companyId);
+  const { data: runs, isLoading: runsLoading } = useMonitoringRuns(companyId);
   const updateCadence = useUpdateCompanyCadence();
 
   if (!company) return null;
@@ -63,25 +72,18 @@ function OverviewTab({ companyId }: { companyId: string }) {
     });
   };
 
-  const handleIntervalChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    updateCadence.mutate({
-      companyId,
-      news_monitoring_interval_minutes: parseInt(e.target.value, 10),
-    });
-  };
-
-  // Calculate next check time
-  let nextCheckStr = "—";
+  // Calculate next scheduled audit time
+  let nextAuditStr = "—";
   if (company.news_monitoring_enabled) {
     if (company.last_news_check_at) {
       const lastCheck = new Date(company.last_news_check_at);
       const nextCheck = new Date(lastCheck.getTime() + (company.news_monitoring_interval_minutes || 1440) * 60000);
-      nextCheckStr = nextCheck.toLocaleString();
+      nextAuditStr = nextCheck.toLocaleString();
     } else {
-      nextCheckStr = "Pending first scan";
+      nextAuditStr = "Pending first audit";
     }
   } else {
-    nextCheckStr = "Monitoring disabled";
+    nextAuditStr = "Automated monitoring disabled";
   }
 
   return (
@@ -131,7 +133,7 @@ function OverviewTab({ companyId }: { companyId: string }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Continuous Monitoring Cadence Settings</CardTitle>
+          <CardTitle>Monitoring Schedule</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-6 md:grid-cols-3">
           <div className="flex items-center gap-3 space-x-2 rounded-md border p-4">
@@ -148,45 +150,75 @@ function OverviewTab({ companyId }: { companyId: string }) {
                 htmlFor="news-monitor-toggle"
                 className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
               >
-                Enable News Monitoring
+                Enable Automated Monitoring
               </label>
               <p className="text-xs text-muted-foreground">
-                Run background audits periodically for this company.
+                Run compliance audits automatically on this company's schedule.
               </p>
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground">Audit Frequency Interval</label>
-            <select
-              value={company.news_monitoring_interval_minutes ?? 1440}
-              onChange={handleIntervalChange}
-              disabled={!(company.news_monitoring_enabled ?? true) || updateCadence.isPending}
-              className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option value="15">15 Minutes (Immediate High-Risk Suspect)</option>
-              <option value="30">30 Minutes</option>
-              <option value="60">1 Hour (Medium Risk Standard)</option>
-              <option value="360">6 Hours</option>
-              <option value="720">12 Hours</option>
-              <option value="1440">24 Hours (Low Risk Standard)</option>
-            </select>
+          <div className="space-y-1.5 rounded-md border p-4">
+            <p className="text-xs text-muted-foreground">Monitoring Frequency</p>
+            <p className="text-sm font-semibold text-foreground">
+              {formatCadence(company.news_monitoring_interval_minutes)}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Determined automatically based on this company's risk level — updates the moment risk changes.
+            </p>
           </div>
 
           <div className="rounded-md border p-4 space-y-2">
             <div>
-              <span className="text-xs text-muted-foreground">Last Evaluated:</span>
+              <span className="text-xs text-muted-foreground">Last Audit:</span>
               <div className="text-sm font-semibold text-foreground">
-                {company.last_news_check_at ? new Date(company.last_news_check_at).toLocaleString() : "Never checked"}
+                {company.last_news_check_at ? new Date(company.last_news_check_at).toLocaleString() : "Never audited"}
               </div>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground">Estimated Next Scan:</span>
+              <span className="text-xs text-muted-foreground">Next Scheduled Audit:</span>
               <div className="text-sm font-semibold text-primary">
-                {nextCheckStr}
+                {nextAuditStr}
               </div>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Monitoring Runs</CardTitle>
+        </CardHeader>
+        <CardContent className="px-0">
+          {runsLoading ? (
+            <div className="space-y-3 px-6">
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
+            </div>
+          ) : !runs || runs.length === 0 ? (
+            <div className="px-6">
+              <EmptyState
+                title="No monitoring runs yet"
+                description="Every automated or manually triggered audit for this company will appear here."
+              />
+            </div>
+          ) : (
+            <ul className="divide-y divide-border">
+              {runs.slice(0, 8).map((run) => (
+                <li key={run.id} className="flex flex-wrap items-center justify-between gap-2 px-6 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="capitalize">
+                      {run.trigger_type.replace(/_/g, " ")}
+                    </Badge>
+                    <span className="text-sm text-muted-foreground">{run.summary || "—"}</span>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -307,8 +339,8 @@ function ReportsTab({ companyId, companyName }: { companyId: string; companyName
               {visibleEvidence!.map((item) => (
                 <li key={item.id} className="rounded-lg border border-border px-3 py-2.5">
                   <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="capitalize">
-                      {item.evidence_type}
+                    <Badge variant="outline">
+                      {evidenceTypeLabel(item.evidence_type)}
                     </Badge>
                     <span className="text-xs text-muted-foreground">
                       {new Date(item.collected_at).toLocaleDateString()}
@@ -342,7 +374,8 @@ export function CompanyDetailPage() {
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get("tab") ?? "overview";
   const { data: company, isLoading, isError, refetch } = useCompany(id);
-  const triggerRun = useTriggerMonitoringRun();
+  const { data: currentUser } = useCurrentUser();
+  const isAdmin = currentUser?.role === "ADMIN";
 
   return (
     <div className="space-y-6">
@@ -371,43 +404,48 @@ export function CompanyDetailPage() {
             title={company.legal_name || "Unnamed company"}
             action={
               <div className="flex items-center gap-2">
-                <CompanyStatusBadge status={company.monitoring_status} />
+                <MonitoringLifecycleBadge company={company} />
                 <RiskBadge level={company.risk_level} />
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={triggerRun.isPending}
-                        onClick={() => triggerRun.mutate(company.id)}
-                      />
-                    }
-                  >
-                    <RefreshCw
-                      data-icon="inline-start"
-                      className={triggerRun.isPending ? "animate-spin" : undefined}
-                    />
-                    {triggerRun.isPending ? "Scanning..." : "Quick Scan"}
-                  </TooltipTrigger>
-                  <TooltipContent>Fast background scan — no live execution view</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Link
-                        to={`/companies/${company.id}/execute`}
-                        className={buttonVariants({ size: "sm" })}
-                      />
-                    }
-                  >
-                    Full Audit
-                  </TooltipTrigger>
-                  <TooltipContent>Runs all 6 AI agents with live execution view and SAR generation</TooltipContent>
-                </Tooltip>
+                {!isAdmin && (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        company.is_active ? (
+                          <Link
+                            to={`/companies/${company.id}/execute`}
+                            className={buttonVariants({ size: "sm" })}
+                          />
+                        ) : (
+                          <Button size="sm" disabled />
+                        )
+                      }
+                    >
+                      <RefreshCw data-icon="inline-start" />
+                      Run Compliance Audit
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {company.is_active
+                        ? "Runs sanctions and adverse media checks, recalculates risk, and generates a SAR if warranted"
+                        : "This company is deactivated and no longer monitored"}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               </div>
             }
           />
+
+          {!company.is_active && (
+            <div className="rounded-lg border border-border bg-muted/50 px-4 py-3 text-sm">
+              <p className="font-medium text-foreground">
+                This company is deactivated
+                {company.deactivated_at ? ` since ${new Date(company.deactivated_at).toLocaleDateString()}` : ""}.
+              </p>
+              <p className="mt-0.5 text-muted-foreground">
+                It has been excluded from all monitoring, but its full history remains accessible below.
+                {company.deactivation_reason ? ` Reason: ${company.deactivation_reason}` : ""}
+              </p>
+            </div>
+          )}
 
           <Tabs defaultValue={initialTab}>
             <TabsList variant="line">

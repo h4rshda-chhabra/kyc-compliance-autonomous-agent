@@ -26,11 +26,16 @@ def _serialize_scanned(company: Company) -> dict:
         "news_monitoring_enabled": company.news_monitoring_enabled,
         "news_monitoring_interval_minutes": company.news_monitoring_interval_minutes,
         "last_news_check_at": company.last_news_check_at.isoformat() if company.last_news_check_at else None,
+        "is_active": company.is_active,
+        "deactivated_at": company.deactivated_at,
+        "deactivation_reason": company.deactivation_reason,
     }
 
 
 def _serialize_directory(entity: DirectoryCompany) -> dict:
-    """A dataset company that has never been scanned — no Postgres state yet."""
+    """A dataset company that has never been scanned — no Postgres state yet.
+    Never scanned means never deactivated either, so it's always active.
+    """
     return {
         "id": entity.id,
         "legal_name": entity.name,
@@ -44,22 +49,54 @@ def _serialize_directory(entity: DirectoryCompany) -> dict:
         "onboarded_at": None,
         "created_at": None,
         "updated_at": None,
+        "is_active": True,
+        "deactivated_at": None,
+        "deactivation_reason": None,
     }
 
 
 @router.get("")
-def list_all_companies(q: str | None = None, db: Session = Depends(get_db)) -> list[dict]:
-    directory = list_companies(query=q)
+def list_all_companies(
+    q: str | None = None,
+    status: str = "active",
+    scope: str = "directory",
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """`status` filters by deactivation state: "active" (default) / "inactive" / "all".
+
+    `scope` controls whether the raw sanctions directory (hundreds of
+    thousands of never-scanned entities) is included at all:
+    - "directory" (default): scanned companies plus the rest of the directory —
+      the browsing view an admin needs to onboard new companies.
+    - "monitored": only companies actually under active monitoring (scanned
+      and past onboarding) — the compliance officer's focused operational view.
+    """
+    if status not in ("active", "inactive", "all"):
+        raise HTTPException(status_code=400, detail="status must be 'active', 'inactive', or 'all'")
+    if scope not in ("directory", "monitored"):
+        raise HTTPException(status_code=400, detail="scope must be 'directory' or 'monitored'")
 
     scanned_query = db.query(Company)
     if q and q.strip():
         scanned_query = scanned_query.filter(Company.legal_name.ilike(f"%{q.strip()}%"))
+    if status == "active":
+        scanned_query = scanned_query.filter(Company.is_active == True)  # noqa: E712
+    elif status == "inactive":
+        scanned_query = scanned_query.filter(Company.is_active == False)  # noqa: E712
+    if scope == "monitored":
+        scanned_query = scanned_query.filter(Company.monitoring_status.notin_(["onboarding", "not_monitored"]))
     scanned = {c.id: c for c in scanned_query.all()}
 
-    # Scanned companies first (they carry live risk state), then the rest of
-    # the directory, skipping duplicates.
     result = [_serialize_scanned(c) for c in scanned.values()]
-    result.extend(_serialize_directory(e) for e in directory if e.id not in scanned)
+
+    if scope == "directory":
+        # Scanned companies first (they carry live risk state), then the rest
+        # of the directory, skipping duplicates. Directory-only entries are
+        # always active, so they're excluded entirely when filtering to "inactive".
+        directory = list_companies(query=q)
+        if status != "inactive":
+            result.extend(_serialize_directory(e) for e in directory if e.id not in scanned)
+
     return result
 
 
@@ -95,8 +132,11 @@ def create_custom_company(payload: CompanyCreate, db: Session = Depends(get_db))
 from pydantic import BaseModel
 
 class UpdateCadenceRequest(BaseModel):
+    # No news_monitoring_interval_minutes field: monitoring frequency is derived
+    # automatically from risk level (see app/services/monitoring_cadence.py and
+    # its call site in AgentOrchestrator), not something a person sets directly.
+    # This endpoint only toggles whether automated monitoring runs at all.
     news_monitoring_enabled: bool | None = None
-    news_monitoring_interval_minutes: int | None = None
 
 
 @router.patch("/{company_id}/cadence")
@@ -104,12 +144,10 @@ def update_company_cadence(company_id: str, payload: UpdateCadenceRequest, db: S
     company = db.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-        
+
     if payload.news_monitoring_enabled is not None:
         company.news_monitoring_enabled = payload.news_monitoring_enabled
-    if payload.news_monitoring_interval_minutes is not None:
-        company.news_monitoring_interval_minutes = payload.news_monitoring_interval_minutes
-        
+
     db.commit()
     db.refresh(company)
     return _serialize_scanned(company)

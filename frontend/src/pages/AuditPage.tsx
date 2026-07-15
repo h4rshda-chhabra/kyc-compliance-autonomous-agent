@@ -19,7 +19,7 @@ export function AuditPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Audit Trail" description="Immutable log of every action taken across the platform." />
+      <PageHeader title="Timeline" description="Immutable log of every compliance action taken across the platform." />
 
       <Card>
         <CardContent className="px-0">

@@ -30,13 +30,23 @@ def run_monitoring_sweep(company_ids: list[str] | None = None, trigger_type: str
     `trigger_type` is recorded on each resulting MonitoringRun — callers driving a targeted
     sweep for a specific reason (e.g. a watchlist update) should pass their own label instead
     of the default "scheduled", so the monitoring history reflects why the run happened.
+
+    Deactivated companies (Company.is_active is False) are always excluded, whether
+    targeted or scheduled — a company an admin has deactivated stops being audited
+    entirely until reactivated, regardless of how the sweep was triggered.
     """
     from datetime import datetime, timedelta, UTC
     from app.orchestrator.pipeline import run_company_audit
 
     db = SessionLocal()
     try:
-        query = db.query(Company).filter(Company.monitoring_status != "onboarding")
+        # is_active excludes deactivated (soft-deleted) companies from every sweep
+        # path below — scheduled, news-cadence, and targeted/watchlist re-screening
+        # all funnel through this one query, so this is the single enforcement point.
+        query = db.query(Company).filter(
+            Company.monitoring_status != "onboarding",
+            Company.is_active == True,  # noqa: E712 - SQLAlchemy requires `== True`, not `is True`
+        )
         if company_ids is not None:
             query = query.filter(Company.id.in_(company_ids))
         

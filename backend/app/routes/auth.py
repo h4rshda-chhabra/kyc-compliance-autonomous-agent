@@ -1,23 +1,24 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.user import User
-from app.core.security import get_password_hash, verify_password, create_access_token, decode_access_token
+from app.models.user import User, UserRole
+from app.core.security import get_password_hash, verify_password, create_access_token
+from app.core.deps import get_current_user_dep
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-security = HTTPBearer(auto_error=False)
 
 
 # Pydantic Schemas
 class UserRegister(BaseModel):
+    # No `role` field: self-registration always creates a COMPLIANCE_OFFICER
+    # (see register() below). ADMIN accounts are never self-registerable —
+    # they only exist via database seeding or manual promotion.
     email: EmailStr
     password: str = Field(min_length=8)
     full_name: str = Field(min_length=1)
-    role: str = "reviewer"
 
 
 class UserLogin(BaseModel):
@@ -29,62 +30,12 @@ class UserResponse(BaseModel):
     id: str
     email: str
     full_name: str
-    role: str
+    role: UserRole
 
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
-
-# Dependency to get current user from token
-def get_current_user_dep(
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
-    db: Session = Depends(get_db)
-) -> User:
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    token = credentials.credentials
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid access token or expired session",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing user ID claim",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        user_uuid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user ID format in token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    user = db.get(User, user_uuid)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is deactivated",
-        )
-    return user
 
 
 @router.post("/register", response_model=UserResponse)
@@ -102,7 +53,7 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
         email=payload.email.lower().strip(),
         hashed_password=get_password_hash(payload.password),
         full_name=payload.full_name.strip(),
-        role=payload.role.strip(),
+        role=UserRole.COMPLIANCE_OFFICER,
         is_active=True
     )
     db.add(new_user)
@@ -134,7 +85,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         )
     
     access_token = create_access_token(
-        data={"sub": str(user.id), "email": user.email, "role": user.role}
+        data={"sub": str(user.id), "email": user.email, "role": user.role.value}
     )
     return {"access_token": access_token, "token_type": "bearer"}
 

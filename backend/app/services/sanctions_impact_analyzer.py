@@ -32,9 +32,16 @@ def determine_affected_companies(
     settings = get_settings()
     active_db_path = Path(settings.sanctions_db_path)
 
-    # Fetch all active company IDs to use as fallback if needed
+    # Fetch all active company IDs to use as fallback if needed. Deactivated
+    # companies are excluded here, before matching begins, so they're never
+    # scanned against the delta in the first place — not just dropped later
+    # by run_monitoring_sweep's own filter.
     try:
-        active_companies = db.query(Company).filter(Company.monitoring_status != "onboarding").all()
+        active_companies = (
+            db.query(Company)
+            .filter(Company.monitoring_status != "onboarding", Company.is_active == True)  # noqa: E712
+            .all()
+        )
         active_company_ids = {c.id for c in active_companies}
         if not active_company_ids:
             return set()

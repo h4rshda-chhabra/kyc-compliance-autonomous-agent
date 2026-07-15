@@ -7,7 +7,6 @@ import { CompaniesPage } from "@/pages/CompaniesPage";
 import { CompanyDetailPage } from "@/pages/CompanyDetailPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { LoginPage } from "@/pages/LoginPage";
-import { MonitoringPage } from "@/pages/MonitoringPage";
 import { ProfilePage } from "@/pages/ProfilePage";
 import { SarReviewPage } from "@/pages/SarReviewPage";
 import { SarReviewsPage } from "@/pages/SarReviewsPage";
@@ -28,7 +27,6 @@ export default function App() {
           <Route path="/companies" element={<CompaniesPage />} />
           <Route path="/companies/:id" element={<CompanyDetailPage />} />
           <Route path="/companies/:companyId/execute" element={<AgentExecution />} />
-          <Route path="/monitoring" element={<MonitoringPage />} />
           <Route path="/reviews" element={<SarReviewsPage />} />
           <Route path="/sar/:id" element={<SarReviewPage />} />
           <Route path="/audit" element={<AuditPage />} />

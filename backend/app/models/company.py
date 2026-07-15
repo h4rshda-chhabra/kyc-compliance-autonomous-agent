@@ -1,6 +1,7 @@
+import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -36,4 +37,14 @@ class Company(Base):
     news_monitoring_enabled: Mapped[bool] = mapped_column(default=True)
     news_monitoring_interval_minutes: Mapped[int] = mapped_column(default=1440)  # Default: 24 hours (1440 mins)
     last_news_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Deactivation (soft delete) — orthogonal to monitoring_status/risk_level,
+    # which reflect the AI pipeline's risk assessment and must keep moving
+    # even for a company that a human has since deactivated. Company rows are
+    # never deleted; is_active is the single source of truth for whether the
+    # scheduler should still audit this company.
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deactivated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    deactivation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 

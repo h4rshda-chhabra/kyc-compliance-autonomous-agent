@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_compliance_officer
 from app.database import get_db
-from app.models import Company, MonitoringRun
+from app.models import AuditLog, Company, MonitoringRun, User
 from app.services.company_directory import get_company as get_directory_company
 from app.orchestrator.pipeline import run_company_audit
 
@@ -27,13 +28,14 @@ def _serialize(run: MonitoringRun, company_name: str | None = None) -> dict:
 
 
 @router.get("/runs")
-def list_monitoring_runs(db: Session = Depends(get_db)) -> list[dict]:
-    results = (
+def list_monitoring_runs(company_id: str | None = None, db: Session = Depends(get_db)) -> list[dict]:
+    query = (
         db.query(MonitoringRun, Company.legal_name)
         .outerjoin(Company, MonitoringRun.company_id == Company.id)
-        .order_by(MonitoringRun.created_at.desc())
-        .all()
     )
+    if company_id:
+        query = query.filter(MonitoringRun.company_id == company_id)
+    results = query.order_by(MonitoringRun.created_at.desc()).all()
     return [_serialize(run, company_name) for run, company_name in results]
 
 
@@ -49,7 +51,11 @@ def get_monitoring_run(run_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
 
 
 @router.post("/companies/{company_id}/trigger")
-def trigger_manual_run(company_id: str, db: Session = Depends(get_db)) -> dict:
+def trigger_manual_run(
+    company_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_compliance_officer()),
+) -> dict:
     company = db.get(Company, company_id)
     if company is None:
         # First scan: materialize the company from the sanctions dataset directory.
@@ -71,6 +77,19 @@ def trigger_manual_run(company_id: str, db: Session = Depends(get_db)) -> dict:
         db.add(company)
         db.commit()
         db.refresh(company)
+
+    # Every manual audit gets its own audit-trail entry naming who triggered it —
+    # distinct from AgentOrchestrator's generic "run_monitoring" entry, which
+    # fires for scheduled/watchlist runs too and has no human actor to record.
+    db.add(AuditLog(
+        id=uuid.uuid4(),
+        actor=current_user.email,
+        action="manual_audit_triggered",
+        resource_type="company",
+        resource_id=company.id,
+        event_metadata={"triggered_by": current_user.full_name},
+    ))
+    db.commit()
 
     try:
         result = run_company_audit(company_id=company.id, db=db, trigger_type="manual")

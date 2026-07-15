@@ -16,7 +16,7 @@ try:
     from app.models.sanction_match import SanctionMatch
     from app.models.risk_report import RiskReport
     from app.models.news_article import NewsArticle
-    from app.models.user import User
+    from app.models.user import User, UserRole
     from app.models.audit_log import AuditLog
     from app.models.evidence import Evidence
     from app.models.timeline_event import TimelineEvent
@@ -111,7 +111,7 @@ def seed():
             email="demo@example.com",
             hashed_password=get_password_hash("password123"),
             full_name="Demo Auditor Analyst",
-            role="reviewer",
+            role=UserRole.COMPLIANCE_OFFICER,
             is_active=True
         )
         db.add(demo_user)

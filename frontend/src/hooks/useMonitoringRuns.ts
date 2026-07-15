@@ -2,11 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/services/apiClient";
 import type { MonitoringRun } from "@/types/models";
 
-export function useMonitoringRuns() {
+export function useMonitoringRuns(companyId?: string) {
   return useQuery({
-    queryKey: ["monitoring-runs"],
+    queryKey: ["monitoring-runs", { companyId: companyId ?? "" }],
     queryFn: async () => {
-      const { data } = await apiClient.get<MonitoringRun[]>("/monitor/runs");
+      const { data } = await apiClient.get<MonitoringRun[]>("/monitor/runs", {
+        params: companyId ? { company_id: companyId } : undefined,
+      });
       return data;
     },
   });

@@ -43,18 +43,38 @@ export function RiskBadge({ level }: { level: RiskLevel }) {
   return <StatusBadge value={level} styles={riskStyles} />;
 }
 
-const companyStatusStyles: Record<string, string> = {
+const lifecycleStyles: Record<string, string> = {
   onboarding: blue,
-  active: emerald,
-  paused: neutral,
-  inactive: neutral,
-  under_review: amber,
-  escalated: red,
-  flagged: red,
+  "under monitoring": emerald,
+  deactivated: neutral,
 };
 
-export function CompanyStatusBadge({ status }: { status: string }) {
-  return <StatusBadge value={status} styles={companyStatusStyles} />;
+/** Collapses monitoring_status + is_active into exactly the three states a
+ *  compliance officer or admin actually cares about — never risk level, and
+ *  never Active/Inactive wording (that's reserved for the deactivation
+ *  lifecycle, not risk). Risk is always shown separately via RiskBadge. */
+export function monitoringLifecycleLabel(company: {
+  monitoring_status: string;
+  is_active: boolean;
+}): "Onboarding" | "Under Monitoring" | "Deactivated" {
+  if (!company.is_active) return "Deactivated";
+  if (company.monitoring_status === "onboarding" || company.monitoring_status === "not_monitored") {
+    return "Onboarding";
+  }
+  return "Under Monitoring";
+}
+
+export function MonitoringLifecycleBadge({
+  company,
+}: {
+  company: { monitoring_status: string; is_active: boolean };
+}) {
+  const label = monitoringLifecycleLabel(company);
+  return (
+    <Badge variant="outline" className={lifecycleStyles[label.toLowerCase()] ?? neutral}>
+      {label}
+    </Badge>
+  );
 }
 
 const runStatusStyles: Record<string, string> = {

@@ -5,28 +5,37 @@ import {
   ClipboardList,
   LayoutDashboard,
   LogOut,
-  Radar,
   ScrollText,
   ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserMenu } from "@/components/UserMenu";
-import { useLogout } from "@/hooks/useAuth";
+import { useCurrentUser, useLogout } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/companies", label: "Companies", icon: Building2 },
-  { to: "/monitoring", label: "Monitoring", icon: Radar },
-  { to: "/reviews", label: "SAR Reviews", icon: ClipboardList },
-  { to: "/audit", label: "Audit Trail", icon: ScrollText },
-];
+// SAR Reviews and Deactivation Requests both point at /reviews — that page
+// already renders the compliance-officer queue or the admin queue depending
+// on the logged-in user's role, so only the nav label differs here.
+function navItemsForRole(isAdmin: boolean) {
+  return [
+    { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+    { to: "/companies", label: "Companies", icon: Building2 },
+    {
+      to: "/reviews",
+      label: isAdmin ? "Deactivation Requests" : "SAR Reviews",
+      icon: ClipboardList,
+    },
+    { to: "/audit", label: "Timeline", icon: ScrollText },
+  ];
+}
 
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const logout = useLogout();
+  const { data: currentUser } = useCurrentUser();
+  const navItems = navItemsForRole(currentUser?.role === "ADMIN");
 
   async function handleLogout() {
     await logout.mutateAsync().catch(() => undefined);

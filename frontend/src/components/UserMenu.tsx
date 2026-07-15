@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrentUser, useLogout } from "@/hooks/useAuth";
-import { cn, userInitials } from "@/lib/utils";
+import { cn, roleLabel, userInitials } from "@/lib/utils";
 
 interface UserMenuProps {
   variant?: "full" | "compact";
@@ -28,7 +28,7 @@ export function UserMenu({ variant = "full" }: UserMenuProps) {
   }
 
   const displayName = user?.full_name || user?.email || "Account";
-  const displayRole = user?.role ?? "";
+  const displayRole = user?.role ? roleLabel(user.role) : "";
 
   if (isLoading) {
     return (

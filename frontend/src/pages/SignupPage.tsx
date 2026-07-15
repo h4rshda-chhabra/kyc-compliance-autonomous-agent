@@ -47,7 +47,6 @@ export function SignupPage() {
       email: email.trim(),
       password,
       full_name: name.trim(),
-      role: "reviewer"
     })
     .then(() => {
       navigate("/login");

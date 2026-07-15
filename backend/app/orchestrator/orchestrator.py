@@ -12,6 +12,7 @@ from app.services.rss_news_service import RSSNewsService
 from app.services.news_classifier import NewsClassifier
 from app.services.risk_change_detector import MaterialChangeResult
 from app.services.sar_decision_service import SARDecision
+from app.services.monitoring_cadence import cadence_minutes_for_risk
 from app.agents.entity_resolution_agent import EntityResolutionAgent
 from app.orchestrator.audit_result import AuditResult
 
@@ -360,6 +361,13 @@ class AgentOrchestrator:
             # it's a material enough change to alert a human about.
             company.risk_level = risk_level
             company.monitoring_status = "escalated" if risk_level == "high" else ("review" if risk_level == "medium" else "monitored")
+
+            # Monitoring frequency is derived from risk, not chosen manually —
+            # every time risk_level moves, cadence moves with it automatically.
+            new_cadence = cadence_minutes_for_risk(risk_level)
+            if new_cadence is not None:
+                company.news_monitoring_interval_minutes = new_cadence
+
             self.db.commit()
 
             sanction_ids = sorted({str(hit["id"]) for hit in sanctions_alerts if hit.get("id") is not None})
@@ -523,7 +531,7 @@ class AgentOrchestrator:
                     monitoring_run_id=run.id,
                     evidence_type="sanction",
                     source_url=f"https://opensanctions.org/entities/{hit['id']}",
-                    content=f"Fuzzy resolution match {hit['resolution_score']}% found on global list {hit['source']}. Details: Name: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
+                    content=f"Watchlist match ({hit['resolution_score']}% confidence) on {hit['source']}. Subject: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
                 ))
 
             for art in audit_result.adverse_media_alerts:
@@ -543,16 +551,16 @@ class AgentOrchestrator:
                     monitoring_run_id=run.id,
                     evidence_type="adverse_media",
                     source_url=art["url"],
-                    content=f"Adverse media article detected: {art['title']} ({art['category']} - {art['severity']})."
+                    content=f"Adverse media coverage identified: '{art['title']}' — classified as {art['category']} ({art['severity']} severity)."
                 ))
 
             for alert in audit_result.contamination_alerts:
                     alert_content = (
-                        f"[CROSS-CONTAMINATION] Director '{alert['director_name']}' is also "
-                        f"listed as a director at '{alert['linked_company_name']}' "
+                        f"Shared directorship identified: '{alert['director_name']}' is also "
+                        f"a director at '{alert['linked_company_name']}' "
                         f"(Jurisdiction: {alert['linked_company_jurisdiction']}), "
-                        f"which has an existing risk level of {alert['linked_company_risk'].upper()}. "
-                        f"This shared directorship represents a connected-entity risk flag."
+                        f"which carries an existing {alert['linked_company_risk'].upper()} risk rating. "
+                        f"This represents a related-entity risk factor."
                     )
                     # Deduplicate: only insert if this exact alert isn't already stored
                     existing = (

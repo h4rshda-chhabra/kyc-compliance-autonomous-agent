@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrentUser } from "@/hooks/useAuth";
-import { userInitials } from "@/lib/utils";
+import { roleLabel, userInitials } from "@/lib/utils";
 
 export function ProfilePage() {
   const { data: user, isLoading, isError, refetch } = useCurrentUser();
@@ -41,8 +41,8 @@ export function ProfilePage() {
                     {user.full_name || "—"}
                   </p>
                   {user.role ? (
-                    <Badge variant="outline" className="mt-1 capitalize">
-                      {user.role}
+                    <Badge variant="outline" className="mt-1">
+                      {roleLabel(user.role)}
                     </Badge>
                   ) : null}
                 </div>
@@ -62,8 +62,8 @@ export function ProfilePage() {
                   <UserRound className="size-4 shrink-0 text-muted-foreground" />
                   <div>
                     <dt className="text-xs text-muted-foreground">Role</dt>
-                    <dd className="text-sm font-medium capitalize text-foreground">
-                      {user.role || "—"}
+                    <dd className="text-sm font-medium text-foreground">
+                      {user.role ? roleLabel(user.role) : "—"}
                     </dd>
                   </div>
                 </div>
