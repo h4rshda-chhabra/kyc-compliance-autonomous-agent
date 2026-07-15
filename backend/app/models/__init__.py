@@ -2,6 +2,7 @@
 
 from app.models.audit_log import AuditLog
 from app.models.company import Company
+from app.models.company_audit_state import CompanyAuditState
 from app.models.company_director import CompanyDirector
 from app.models.evidence import Evidence
 from app.models.human_review import HumanReview
@@ -17,6 +18,7 @@ from app.models.watchlist_match import WatchlistMatch
 __all__ = [
     "AuditLog",
     "Company",
+    "CompanyAuditState",
     "CompanyDirector",
     "Evidence",
     "HumanReview",

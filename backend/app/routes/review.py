@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import SARReport, Company, HumanReview, AuditLog
+from app.models import SARReport, Company, HumanReview, AuditLog, TimelineEvent
 from app.schemas.review import SarDecisionRequest
 
 router = APIRouter(prefix="/review", tags=["review"])
@@ -49,8 +49,6 @@ def submit_review_decision(
     if decision not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="Decision must be 'approved' or 'rejected'")
 
-    report.status = decision
-    
     # Find and update corresponding company risk/monitoring status
     company = db.get(Company, report.company_id)
     if company:
@@ -71,6 +69,15 @@ def submit_review_decision(
     )
     db.add(review)
 
+    # Insert Timeline Event to save in history
+    db.add(TimelineEvent(
+        id=uuid.uuid4(),
+        company_id=report.company_id,
+        event_type="human_review",
+        description=f"Compliance review decision submitted by analyst: {decision.upper()}.",
+        occurred_at=datetime.now(UTC)
+    ))
+
     # Log action
     audit = AuditLog(
         id=uuid.uuid4(),
@@ -82,6 +89,8 @@ def submit_review_decision(
     )
     db.add(audit)
 
+    # Delete SAR report after review is complete
+    db.delete(report)
+
     db.commit()
-    db.refresh(report)
-    return _serialize(report)
+    return {"detail": "Decision recorded and SAR report reviewed", "decision": decision, "status": "deleted"}

@@ -23,6 +23,7 @@ export function LoginPage() {
   const [remember, setRemember] = useState(true);
   const [errors, setErrors] = useState<LoginErrors>({});
   const [demoLoading, setDemoLoading] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -32,17 +33,26 @@ export function LoginPage() {
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
-    await login.mutateAsync({ email, password }).catch(() => undefined);
-    navigate("/");
+    setFormError(null);
+    try {
+      await login.mutateAsync({ email, password });
+      navigate("/");
+    } catch {
+      setFormError("Incorrect email or password.");
+    }
   }
 
   async function handleExploreDemo() {
     setDemoLoading(true);
-    await login
-      .mutateAsync({ email: "demo@kycauditor.dev", password: "demo-password" })
-      .catch(() => undefined);
-    setDemoLoading(false);
-    navigate("/");
+    setFormError(null);
+    try {
+      await login.mutateAsync({ email: "demo@example.com", password: "password123" });
+      navigate("/");
+    } catch {
+      setFormError("Couldn't sign in to the demo account. Please try again.");
+    } finally {
+      setDemoLoading(false);
+    }
   }
 
   const busy = login.isPending || demoLoading;
@@ -57,6 +67,12 @@ export function LoginPage() {
           Sign in to your compliance workspace.
         </p>
       </div>
+
+      {formError ? (
+        <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {formError}
+        </p>
+      ) : null}
 
       <form onSubmit={handleSubmit} noValidate className="space-y-4">
         <div className="space-y-2">

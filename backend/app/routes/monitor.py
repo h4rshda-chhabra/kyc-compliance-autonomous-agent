@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Company, MonitoringRun
 from app.services.company_directory import get_company as get_directory_company
-from app.orchestrator.orchestrator import AgentOrchestrator
+from app.orchestrator.pipeline import run_company_audit
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 
@@ -70,9 +70,8 @@ def trigger_manual_run(company_id: str, db: Session = Depends(get_db)) -> dict:
         db.refresh(company)
 
     try:
-        orchestrator = AgentOrchestrator(company_id=company.id, db=db)
-        result = orchestrator.execute_audit()
-        
+        result = run_company_audit(company_id=company.id, db=db, trigger_type="manual")
+
         # Query the run to merge its details for any hook expecting a MonitoringRun
         run = db.get(MonitoringRun, uuid.UUID(result["run_id"]))
         if run:

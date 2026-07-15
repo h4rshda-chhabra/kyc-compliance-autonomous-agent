@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import sqlite3
@@ -9,10 +10,13 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.services.rss_news_service import RSSNewsService
 from app.services.news_classifier import NewsClassifier
+from app.services.risk_change_detector import ChangeResult
 from app.agents.entity_resolution_agent import EntityResolutionAgent
+from app.orchestrator.audit_result import AuditResult
 
 # ORM models
 from app.models.company import Company
+from app.models.company_audit_state import CompanyAuditState
 from app.models.company_director import CompanyDirector
 from app.models.monitoring_run import MonitoringRun
 from app.models.sanction_match import SanctionMatch
@@ -26,9 +30,20 @@ from app.models.audit_log import AuditLog
 logger = logging.getLogger("app.orchestrator")
 settings = get_settings()
 
+
 class AgentOrchestrator:
-    """Orchestrates the continuous audit workflow, coordinating sanctions checks,
-    media ingestion, entity resolution, and risk synthesis.
+    """Orchestrates the continuous audit workflow.
+
+    Split into two stages so the "is this worth alerting a human about?"
+    decision lives outside the orchestrator (see RiskChangeDetector):
+
+    1. execute_audit() — collects sanctions/adverse-media evidence, resolves
+       entities, and calculates a risk reading. Returns an AuditResult. Does
+       NOT decide materiality and does NOT write SAR/evidence rows.
+    2. finalize(audit_result, change_result) — given an externally-computed
+       ChangeResult, persists findings accordingly: a material change writes
+       evidence, a timeline entry, and a SAR draft; a routine confirmation
+       only updates monitoring history and the audit-state baseline.
     """
 
     def __init__(self, company_id: str, db: Session) -> None:
@@ -49,6 +64,11 @@ class AgentOrchestrator:
                 self.sqlite_db = p
                 break
 
+        # Populated by execute_audit(); reused by finalize() so it doesn't need
+        # to re-fetch/re-derive anything the first stage already computed.
+        self._company: Optional[Company] = None
+        self._directors: List[CompanyDirector] = []
+        self._run: Optional[MonitoringRun] = None
 
     def _get_sqlite_candidates(self, name: str) -> List[Dict[str, Any]]:
         """Queries the preprocessed SQLite database for raw matching targets."""
@@ -60,15 +80,15 @@ class AgentOrchestrator:
         try:
             conn = sqlite3.connect(self.sqlite_db)
             cur = conn.cursor()
-            
+
             # Query primary names and aliases
             query = """
                 SELECT e.id, e.name, e.type, e.source, e.countries, e.dob, 'Primary Name' as match_type
                 FROM entities e
                 WHERE e.name LIKE ?
-                
+
                 UNION
-                
+
                 SELECT e.id, e.name, e.type, e.source, e.countries, e.dob, 'Alias' as match_type
                 FROM entities e
                 JOIN aliases a ON e.id = a.entity_id
@@ -91,14 +111,14 @@ class AgentOrchestrator:
                 })
         except Exception as e:
             logger.error("Error querying SQLite database: %s", str(e))
-            
+
         return candidates
 
     def _call_gemini_llm(self, prompt: str) -> Optional[str]:
         """Optionally generates content using the Gemini SDK if configured."""
         if not settings.gemini_api_key:
             return None
-            
+
         try:
             import google.generativeai as genai
             genai.configure(api_key=settings.gemini_api_key)
@@ -109,23 +129,29 @@ class AgentOrchestrator:
             logger.error("Failed to generate LLM response from Gemini SDK: %s", str(e))
             return None
 
-    def execute_audit(self) -> Dict[str, Any]:
-        """Executes the complete end-to-end audit process and saves the logs to PostgreSQL."""
-        logger.info("Starting automated compliance audit for company ID: %s", self.company_id)
-        
+    def execute_audit(self, trigger_type: str = "manual") -> AuditResult:
+        """Collects fresh evidence and calculates a risk reading. No persistence
+        of findings and no materiality/SAR decisions happen here.
+        """
+        logger.info(
+            "Starting automated compliance audit for company ID: %s (trigger=%s)",
+            self.company_id,
+            trigger_type,
+        )
+
         # 1. Fetch Company & Directors
         company = self.db.query(Company).filter(Company.id == self.company_id).first()
         if not company:
             raise ValueError(f"Company with ID {self.company_id} not found in database.")
-            
+
         directors = self.db.query(CompanyDirector).filter(CompanyDirector.company_id == self.company_id).all()
         logger.info("Retrieved company '%s' with %d directors.", company.legal_name, len(directors))
 
-        # 2. Create Monitoring Run
+        # 2. Create Monitoring Run (left "running" — finalize() closes it out)
         run = MonitoringRun(
             id=uuid.uuid4(),
             company_id=company.id,
-            trigger_type="manual",
+            trigger_type=trigger_type,
             status="running",
             summary="Continuous KYC audit scan in progress...",
             started_at=datetime.utcnow()
@@ -134,13 +160,13 @@ class AgentOrchestrator:
         self.db.commit()
         self.db.refresh(run)
 
-        sanctions_alerts = []
-        adverse_media_alerts = []
-        timeline_events_data = []
+        sanctions_alerts: List[Dict[str, Any]] = []
+        adverse_media_alerts: List[Dict[str, Any]] = []
+        timeline_events_data: List[Dict[str, Any]] = []
 
         try:
-            # 3. Step: Sanctions Screening & Entity Resolution
-            # Screen company name itself
+            # 3. Step: Sanctions Screening & Entity Resolution (in-memory — persisted
+            # only by finalize() if the result turns out to be a material change)
             company_raw_hits = self._get_sqlite_candidates(company.legal_name)
             resolved_company = self.resolver.resolve_directors(
                 director_name=company.legal_name,
@@ -149,97 +175,47 @@ class AgentOrchestrator:
                 dob=None
             )
             for hit in resolved_company:
-                san_match = SanctionMatch(
-                    id=uuid.uuid4(),
-                    company_id=company.id,
-                    monitoring_run_id=run.id,
-                    list_name=hit["source"],
-                    matched_name=hit["name"],
-                    match_score=float(hit["resolution_score"]),
-                    status="pending_review"
-                )
-                self.db.add(san_match)
                 sanctions_alerts.append(hit)
-                
-                # Create Evidence record
-                evidence = Evidence(
-                    id=uuid.uuid4(),
-                    company_id=company.id,
-                    monitoring_run_id=run.id,
-                    evidence_type="sanction",
-                    source_url=f"https://opensanctions.org/entities/{hit['id']}",
-                    content=f"Fuzzy resolution match {hit['resolution_score']}% found for company {company.legal_name} on global list {hit['source']}. Details: Name: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
-                )
-                self.db.add(evidence)
-
-                # Create Timeline event
                 timeline_events_data.append({
                     "event_type": "sanction_match",
-                    "description": f"Company {company.legal_name} matched watchlist: {hit['name']} ({hit['source']})."
+                    "description": f"Company {company.legal_name} matched watchlist: {hit['name']} ({hit['source']}).",
+                    "evidence": {
+                        "kind": "sanction",
+                        "subject": company.legal_name,
+                        "hit": hit,
+                    },
                 })
 
             for director in directors:
                 raw_hits = self._get_sqlite_candidates(director.full_name)
-                
-                # Perform Entity Resolution to prune false positives
+
                 resolved = self.resolver.resolve_directors(
                     director_name=director.full_name,
                     candidates=raw_hits,
                     nationality=director.nationality,
                     dob=str(director.date_of_birth) if director.date_of_birth else None
                 )
-                
-                for hit in resolved:
-                    san_match = SanctionMatch(
-                        id=uuid.uuid4(),
-                        company_id=company.id,
-                        monitoring_run_id=run.id,
-                        list_name=hit["source"],
-                        matched_name=hit["name"],
-                        match_score=float(hit["resolution_score"]),
-                        status="pending_review"
-                    )
-                    self.db.add(san_match)
-                    sanctions_alerts.append(hit)
-                    
-                    # Create Evidence record
-                    evidence = Evidence(
-                        id=uuid.uuid4(),
-                        company_id=company.id,
-                        monitoring_run_id=run.id,
-                        evidence_type="sanction",
-                        source_url=f"https://opensanctions.org/entities/{hit['id']}",
-                        content=f"Fuzzy resolution match {hit['resolution_score']}% found for director {director.full_name} on global list {hit['source']}. Details: Name: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
-                    )
-                    self.db.add(evidence)
 
-                    # Create Timeline event
+                for hit in resolved:
+                    sanctions_alerts.append(hit)
                     timeline_events_data.append({
                         "event_type": "sanction_match",
-                        "description": f"Director {director.full_name} matched watchlist: {hit['name']} ({hit['source']})."
+                        "description": f"Director {director.full_name} matched watchlist: {hit['name']} ({hit['source']}).",
+                        "evidence": {
+                            "kind": "sanction",
+                            "subject": director.full_name,
+                            "hit": hit,
+                        },
                     })
 
             # 4. Step: Adverse Media Screening
-            # Query Google News RSS for the company and directors
             queries = [company.legal_name] + [d.full_name for d in directors]
             for query in queries[:3]:  # Limit queries to prevent rate limits
                 articles = self.rss_service.fetch_articles(query, limit=5)
                 for art in articles:
                     category, severity = NewsClassifier.classify(art["title"], art["description"])
-                    
-                    # Only record articles if they are classified as adverse media with negative severity
+
                     if severity in ["Medium", "High", "Critical"]:
-                        news = NewsArticle(
-                            id=uuid.uuid4(),
-                            company_id=company.id,
-                            monitoring_run_id=run.id,
-                            title=art["title"],
-                            url=art["link"],
-                            source=art["source"],
-                            sentiment="negative",
-                            published_at=datetime.utcnow()
-                        )
-                        self.db.add(news)
                         adverse_media_alerts.append({
                             "title": art["title"],
                             "url": art["link"],
@@ -247,29 +223,21 @@ class AgentOrchestrator:
                             "category": category,
                             "severity": severity
                         })
-                        
-                        # Create Evidence
-                        evidence = Evidence(
-                            id=uuid.uuid4(),
-                            company_id=company.id,
-                            monitoring_run_id=run.id,
-                            evidence_type="adverse_media",
-                            source_url=art["link"],
-                            content=f"Adverse media article detected: {art['title']} ({category} - {severity}). Published by {art['source']}."
-                        )
-                        self.db.add(evidence)
-
-                        # Create Timeline event
                         timeline_events_data.append({
                             "event_type": "adverse_media",
-                            "description": f"Adverse media match: '{art['title'][:80]}...' ({category})"
+                            "description": f"Adverse media match: '{art['title'][:80]}...' ({category})",
+                            "evidence": {
+                                "kind": "adverse_media",
+                                "article": art,
+                                "category": category,
+                                "severity": severity,
+                            },
                         })
 
             # 5. Step: Risk Score Calculation Logic
             risk_score = 15.0
             risk_level = "low"
-            
-            # Simple weighted rules engine
+
             if sanctions_alerts:
                 risk_score = max(risk_score, 95.0)
                 risk_level = "high"
@@ -280,134 +248,48 @@ class AgentOrchestrator:
                 risk_score = max(risk_score, 40.0)
                 risk_level = "medium"
 
-            # Create Risk Report
             rationale_summary = "No adverse sanctions, PEPs, or media alerts resolved for this company."
             if risk_level == "high":
-                rationale_summary = f"Severe risk identified. Director matched sanctioned watchlist."
+                rationale_summary = "Severe risk identified. Director matched sanctioned watchlist."
             elif risk_level == "medium":
-                rationale_summary = f"Medium risk flagged due to multiple negative adverse media matches."
+                rationale_summary = "Medium risk flagged due to multiple negative adverse media matches."
 
-            report = RiskReport(
-                id=uuid.uuid4(),
-                company_id=company.id,
-                monitoring_run_id=run.id,
-                risk_score=risk_score,
-                risk_level=risk_level,
-                rationale=rationale_summary
-            )
-            self.db.add(report)
-
-            # Update Company details
+            # Current risk always reflects the latest scan, independent of whether
+            # it's a material enough change to alert a human about.
             company.risk_level = risk_level
             company.monitoring_status = "escalated" if risk_level == "high" else ("review" if risk_level == "medium" else "monitored")
-
-            # 6. Step: Write Timeline Events
-            for event_info in timeline_events_data:
-                event = TimelineEvent(
-                    id=uuid.uuid4(),
-                    company_id=company.id,
-                    event_type=event_info["event_type"],
-                    description=event_info["description"],
-                    occurred_at=datetime.utcnow()
-                )
-                self.db.add(event)
-
-            # 7. Step: Generate SAR Report (using templates)
-            possible_template_paths = [
-                "backend/app/templates/sar_template.md",
-                "app/templates/sar_template.md",
-                "../app/templates/sar_template.md"
-            ]
-            template_path = possible_template_paths[0]
-            for tp in possible_template_paths:
-                if os.path.exists(tp):
-                    template_path = tp
-                    break
-
-            sar_narrative = ""
-            if os.path.exists(template_path):
-
-                with open(template_path, "r", encoding="utf-8") as f:
-                    template_content = f.read()
-                
-                # Replace placeholders
-                directors_str = "\n".join([f"* **Name**: {d.full_name} ({d.nationality})" for d in directors])
-                timeline_str = "\n".join([f"* **{datetime.utcnow().strftime('%Y-%m-%d')}**: {e['description']}" for e in timeline_events_data])
-                sanctions_str = "\n".join([f"* **{s['name']}**: Matched on {s['source']} (Score: {s['resolution_score']}%)" for s in sanctions_alerts])
-                media_str = "\n".join([f"* **{m['title']}** ({m['source']}): Classified as {m['category']} ({m['severity']})" for m in adverse_media_alerts])
-
-                sar_narrative = template_content\
-                    .replace("{{ company_name }}", company.legal_name)\
-                    .replace("{{ jurisdiction }}", company.jurisdiction or "Unknown")\
-                    .replace("{{ risk_score }}", str(risk_score))\
-                    .replace("{{ risk_level }}", risk_level.upper())\
-                    .replace("{{ trigger_reason }}", "Periodic Refresh / Ingestion check")\
-                    .replace("{{ filing_date }}", datetime.utcnow().strftime("%Y-%m-%d"))\
-                    .replace("{{ registration_number }}", company.registration_number or "N/A")\
-                    .replace("{{ industry }}", company.industry or "N/A")\
-                    .replace("{{ subject_directors_list }}", directors_str if directors_str else "* None Listed")\
-                    .replace("{{ investigation_trigger_details }}", f"Audit initiated for {company.legal_name} based on onboarding scan.")\
-                    .replace("{{ timeline_events_markdown }}", timeline_str if timeline_str else "* No events logged")\
-                    .replace("{{ sanctions_findings_details }}", sanctions_str if sanctions_str else "* No sanctions found")\
-                    .replace("{{ pep_findings_details }}", "* No Politically Exposed Persons (PEPs) found")\
-                    .replace("{{ adverse_media_details }}", media_str if media_str else "* No negative news detected")\
-                    .replace("{{ risk_rationale }}", rationale_summary)\
-                    .replace("{{ analyst_recommendation }}", "Reject Onboarding" if risk_level == "high" else ("Escalate to Manual Review" if risk_level == "medium" else "Approve Onboarding"))\
-                    .replace("{{ analyst_rationale }}", "Automatically generated analysis based on pre-processed watchlist matching.")\
-                    .replace("{{ confidence_score }}", "90" if sanctions_alerts else "75")\
-                    .replace("{{ narrative_summary_text }}", f"Company {company.legal_name} underwent automatic sanctions screening. " + ("Critical hits identified on sanctions list." if sanctions_alerts else "No critical risk matches found."))
-
-                # Optimize the summary using Gemini if API key is provided
-                llm_prompt = f"Improve this draft SAR compliance report narrative summary. Focus on making the writing professional, formal, and inspired by regulatory FinCEN format:\n\n{sar_narrative}"
-                improved_narrative = self._call_gemini_llm(llm_prompt)
-                if improved_narrative:
-                    sar_narrative = improved_narrative
-
-            # Write SAR to DB if risk is high/medium
-            if risk_level in ["high", "medium"]:
-                sar_report = SARReport(
-                    id=uuid.uuid4(),
-                    company_id=company.id,
-                    monitoring_run_id=run.id,
-                    status="draft",
-                    narrative=sar_narrative,
-                    created_at=datetime.utcnow()
-                )
-                self.db.add(sar_report)
-
-            # Create Audit log
-            audit = AuditLog(
-                id=uuid.uuid4(),
-                actor="system",
-                action="run_monitoring",
-                resource_type="monitoring_run",
-                resource_id=str(run.id),
-                event_metadata={"company_name": company.legal_name, "risk_level": risk_level}
-            )
-            self.db.add(audit)
-
-            # 8. Complete Monitoring Run
-            run.status = "completed"
-            run.summary = f"Audit complete. Risk Level: {risk_level.upper()} (Score: {risk_score}/100)"
-            run.completed_at = datetime.utcnow()
-            
             self.db.commit()
-            logger.info("Automated audit execution completed successfully for %s", company.legal_name)
-            
-            return {
-                "run_id": str(run.id),
-                "company_id": str(company.id),
-                "risk_score": risk_score,
-                "risk_level": risk_level,
-                "sanctions_hits": len(sanctions_alerts),
-                "media_hits": len(adverse_media_alerts)
-            }
+
+            sanction_ids = sorted({str(hit["id"]) for hit in sanctions_alerts if hit.get("id") is not None})
+            news_fingerprint = "|".join(sorted(a["url"] for a in adverse_media_alerts))
+            news_hash = hashlib.sha256(news_fingerprint.encode("utf-8")).hexdigest()
+            entity_confidence = max((float(hit["resolution_score"]) for hit in sanctions_alerts), default=0.0)
+
+            self._company = company
+            self._directors = directors
+            self._run = run
+
+            logger.info("Audit evidence collection complete for %s.", company.legal_name)
+
+            return AuditResult(
+                run_id=str(run.id),
+                company_id=str(company.id),
+                trigger_type=trigger_type,
+                risk_score=risk_score,
+                risk_level=risk_level,
+                rationale_summary=rationale_summary,
+                sanctions_alerts=sanctions_alerts,
+                adverse_media_alerts=adverse_media_alerts,
+                timeline_events_data=timeline_events_data,
+                sanction_ids=sanction_ids,
+                news_count=len(adverse_media_alerts),
+                news_hash=news_hash,
+                entity_confidence=entity_confidence,
+            )
 
         except Exception as e:
             self.db.rollback()
-            logger.error("Failed to complete automated audit execution: %s", str(e))
-            
-            # Try to save failed run status
+            logger.error("Failed to collect audit evidence: %s", str(e))
             try:
                 run.status = "failed"
                 run.summary = f"Execution failed: {str(e)}"
@@ -415,5 +297,244 @@ class AgentOrchestrator:
                 self.db.commit()
             except Exception:
                 pass
-                
+            raise e
+
+    def _build_sar_narrative(self, audit_result: AuditResult, change_result: ChangeResult) -> str:
+        possible_template_paths = [
+            "backend/app/templates/sar_template.md",
+            "app/templates/sar_template.md",
+            "../app/templates/sar_template.md"
+        ]
+        template_path = possible_template_paths[0]
+        for tp in possible_template_paths:
+            if os.path.exists(tp):
+                template_path = tp
+                break
+
+        if not os.path.exists(template_path):
+            return ""
+
+        company = self._company
+        directors = self._directors
+
+        with open(template_path, "r", encoding="utf-8") as f:
+            template_content = f.read()
+
+        directors_str = "\n".join([f"* **Name**: {d.full_name} ({d.nationality})" for d in directors])
+        timeline_str = "\n".join([f"* **{datetime.utcnow().strftime('%Y-%m-%d')}**: {e['description']}" for e in audit_result.timeline_events_data])
+        sanctions_str = "\n".join([f"* **{s['name']}**: Matched on {s['source']} (Score: {s['resolution_score']}%)" for s in audit_result.sanctions_alerts])
+        media_str = "\n".join([f"* **{m['title']}** ({m['source']}): Classified as {m['category']} ({m['severity']})" for m in audit_result.adverse_media_alerts])
+
+        sar_narrative = template_content\
+            .replace("{{ company_name }}", company.legal_name)\
+            .replace("{{ jurisdiction }}", company.jurisdiction or "Unknown")\
+            .replace("{{ risk_score }}", str(audit_result.risk_score))\
+            .replace("{{ risk_level }}", audit_result.risk_level.upper())\
+            .replace("{{ trigger_reason }}", "Continuous Monitoring Sweep" if audit_result.trigger_type == "scheduled" else "Manual / Onboarding Refresh")\
+            .replace("{{ filing_date }}", datetime.utcnow().strftime("%Y-%m-%d"))\
+            .replace("{{ registration_number }}", company.registration_number or "N/A")\
+            .replace("{{ industry }}", company.industry or "N/A")\
+            .replace("{{ subject_directors_list }}", directors_str if directors_str else "* None Listed")\
+            .replace(
+                "{{ investigation_trigger_details }}",
+                change_result.change_summary or f"Audit initiated for {company.legal_name} based on {audit_result.trigger_type} trigger.",
+            )\
+            .replace("{{ timeline_events_markdown }}", timeline_str if timeline_str else "* No events logged")\
+            .replace("{{ sanctions_findings_details }}", sanctions_str if sanctions_str else "* No sanctions found")\
+            .replace("{{ pep_findings_details }}", "* No Politically Exposed Persons (PEPs) found")\
+            .replace("{{ adverse_media_details }}", media_str if media_str else "* No negative news detected")\
+            .replace("{{ risk_rationale }}", audit_result.rationale_summary)\
+            .replace("{{ analyst_recommendation }}", "Reject Onboarding" if audit_result.risk_level == "high" else ("Escalate to Manual Review" if audit_result.risk_level == "medium" else "Approve Onboarding"))\
+            .replace("{{ analyst_rationale }}", "Automatically generated analysis based on pre-processed watchlist matching.")\
+            .replace("{{ confidence_score }}", f"{audit_result.entity_confidence:.0f}" if audit_result.sanctions_alerts else "75")\
+            .replace("{{ narrative_summary_text }}", f"Company {company.legal_name} underwent automatic sanctions screening. " + ("Critical hits identified on sanctions list." if audit_result.sanctions_alerts else "No critical risk matches found."))
+
+        llm_prompt = (
+            "You are an expert compliance investigator at a major global financial institution. "
+            "Your task is to take the following draft Suspicious Activity Report (SAR) template and write a highly professional, "
+            "formal, and detailed regulatory report narrative inspired by FinCEN guidelines.\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Expand the executive summary and subject information with formal banking terminology.\n"
+            "2. Under 'Reason for Investigation', analyze the implications of the sanctions lists or media hits found. "
+            "Explain why these matches present high compliance risk.\n"
+            "3. Format the Timeline of Events and Sanctions/PEP findings as professional, readable tables or detailed bullet points.\n"
+            "4. Under 'Narrative Summary', write a comprehensive, cohesive paragraphs detailing the investigation: who is involved, "
+            "what lists they matched, what negative news was flagged, what is the risk of doing business with them, and what specific steps the compliance division must take.\n"
+            "5. Maintain all critical data facts (scores, names, dates, list names) exactly as provided.\n"
+            "6. Make sure the output is written in clean, beautifully structured Markdown.\n\n"
+            f"Here is the draft input:\n\n{sar_narrative}"
+        )
+        improved_narrative = self._call_gemini_llm(llm_prompt)
+        if improved_narrative:
+            sar_narrative = improved_narrative
+
+        return sar_narrative
+
+    def finalize(self, audit_result: AuditResult, change_result: ChangeResult) -> Dict[str, Any]:
+        """Persists execute_audit()'s findings according to an externally-computed
+        materiality decision, and refreshes the company's audit-state baseline.
+        """
+        company = self._company
+        run = self._run
+        if company is None or run is None:
+            raise RuntimeError("finalize() called before execute_audit()")
+
+        try:
+            if change_result.material_change:
+                for hit in audit_result.sanctions_alerts:
+                    san_match = SanctionMatch(
+                        id=uuid.uuid4(),
+                        company_id=company.id,
+                        monitoring_run_id=run.id,
+                        list_name=hit["source"],
+                        matched_name=hit["name"],
+                        match_score=float(hit["resolution_score"]),
+                        status="pending_review"
+                    )
+                    self.db.add(san_match)
+                    self.db.add(Evidence(
+                        id=uuid.uuid4(),
+                        company_id=company.id,
+                        monitoring_run_id=run.id,
+                        evidence_type="sanction",
+                        source_url=f"https://opensanctions.org/entities/{hit['id']}",
+                        content=f"Fuzzy resolution match {hit['resolution_score']}% found on global list {hit['source']}. Details: Name: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
+                    ))
+
+                for art in audit_result.adverse_media_alerts:
+                    self.db.add(NewsArticle(
+                        id=uuid.uuid4(),
+                        company_id=company.id,
+                        monitoring_run_id=run.id,
+                        title=art["title"],
+                        url=art["url"],
+                        source=art["source"],
+                        sentiment="negative",
+                        published_at=datetime.utcnow()
+                    ))
+                    self.db.add(Evidence(
+                        id=uuid.uuid4(),
+                        company_id=company.id,
+                        monitoring_run_id=run.id,
+                        evidence_type="adverse_media",
+                        source_url=art["url"],
+                        content=f"Adverse media article detected: {art['title']} ({art['category']} - {art['severity']})."
+                    ))
+
+                for event_info in audit_result.timeline_events_data:
+                    self.db.add(TimelineEvent(
+                        id=uuid.uuid4(),
+                        company_id=company.id,
+                        event_type=event_info["event_type"],
+                        description=event_info["description"],
+                        occurred_at=datetime.utcnow()
+                    ))
+                # Summary event explaining *why* this run was material.
+                self.db.add(TimelineEvent(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    event_type=change_result.change_type or "risk_change",
+                    description=change_result.change_summary or "Material risk change detected.",
+                    occurred_at=datetime.utcnow()
+                ))
+
+                sar_narrative = self._build_sar_narrative(audit_result, change_result)
+                self.db.add(SARReport(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    status="draft",
+                    narrative=sar_narrative,
+                    created_at=datetime.utcnow()
+                ))
+
+                # Placeholder for a real notification channel (email/Slack/webhook).
+                self.db.add(AuditLog(
+                    id=uuid.uuid4(),
+                    actor="system",
+                    action="notify_compliance",
+                    resource_type="company",
+                    resource_id=str(company.id),
+                    event_metadata={
+                        "change_type": change_result.change_type,
+                        "change_summary": change_result.change_summary,
+                        "risk_level": audit_result.risk_level,
+                    }
+                ))
+
+                run.summary = f"Material change ({change_result.change_type}). Risk Level: {audit_result.risk_level.upper()} (Score: {audit_result.risk_score}/100)."
+            else:
+                # Routine confirmation — no new evidence rows, no timeline noise, no SAR.
+                report = RiskReport(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    risk_score=audit_result.risk_score,
+                    risk_level=audit_result.risk_level,
+                    rationale=audit_result.rationale_summary
+                )
+                self.db.add(report)
+                run.summary = f"No material change. Risk Level: {audit_result.risk_level.upper()} (Score: {audit_result.risk_score}/100)."
+
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+
+            self.db.add(AuditLog(
+                id=uuid.uuid4(),
+                actor="system",
+                action="run_monitoring",
+                resource_type="monitoring_run",
+                resource_id=str(run.id),
+                event_metadata={
+                    "company_name": company.legal_name,
+                    "risk_level": audit_result.risk_level,
+                    "material_change": change_result.material_change,
+                }
+            ))
+
+            # Refresh the baseline for the next comparison, regardless of materiality.
+            state = self.db.get(CompanyAuditState, company.id)
+            if state is None:
+                state = CompanyAuditState(company_id=company.id)
+                self.db.add(state)
+            state.last_risk_level = audit_result.risk_level
+            state.last_sanction_count = len(audit_result.sanction_ids)
+            state.last_sanction_ids = audit_result.sanction_ids
+            state.last_news_count = audit_result.news_count
+            state.last_news_hash = audit_result.news_hash
+            state.last_entity_confidence = audit_result.entity_confidence
+            state.last_audit_at = datetime.utcnow()
+            if change_result.material_change:
+                state.last_sar_generated_at = datetime.utcnow()
+                state.last_sar_risk = audit_result.risk_level
+
+            self.db.commit()
+            logger.info(
+                "Audit finalized for %s (material_change=%s).",
+                company.legal_name,
+                change_result.material_change,
+            )
+
+            return {
+                "run_id": audit_result.run_id,
+                "company_id": audit_result.company_id,
+                "risk_score": audit_result.risk_score,
+                "risk_level": audit_result.risk_level,
+                "sanctions_hits": len(audit_result.sanctions_alerts),
+                "media_hits": len(audit_result.adverse_media_alerts),
+                "material_change": change_result.material_change,
+                "change_type": change_result.change_type,
+                "change_summary": change_result.change_summary,
+            }
+
+        except Exception as e:
+            self.db.rollback()
+            logger.error("Failed to finalize audit: %s", str(e))
+            try:
+                run.status = "failed"
+                run.summary = f"Finalization failed: {str(e)}"
+                run.completed_at = datetime.utcnow()
+                self.db.commit()
+            except Exception:
+                pass
             raise e

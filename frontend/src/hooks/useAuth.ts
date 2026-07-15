@@ -1,8 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { apiClient } from "@/services/apiClient";
+import { apiClient, TOKEN_KEY } from "@/services/apiClient";
 import type { LoginResponse, User } from "@/types/models";
-
-const TOKEN_KEY = "access_token";
 
 export function useLogin() {
   return useMutation({

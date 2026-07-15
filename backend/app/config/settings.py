@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     # Scheduler
     scheduler_enabled: bool = True
+    monitoring_sweep_interval_minutes: int = 15
 
     # Logging
     log_level: str = "INFO"

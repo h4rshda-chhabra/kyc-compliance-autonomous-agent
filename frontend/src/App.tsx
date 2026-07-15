@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "@/layouts/AppLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
+import { RequireAuth } from "@/components/RequireAuth";
 import { AuditPage } from "@/pages/AuditPage";
 import { CompaniesPage } from "@/pages/CompaniesPage";
 import { CompanyDetailPage } from "@/pages/CompanyDetailPage";
@@ -21,16 +22,18 @@ export default function App() {
         <Route path="/signup" element={<SignupPage />} />
       </Route>
 
-      <Route element={<AppLayout />}>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/companies" element={<CompaniesPage />} />
-        <Route path="/companies/:id" element={<CompanyDetailPage />} />
-        <Route path="/companies/:companyId/execute" element={<AgentExecution />} />
-        <Route path="/monitoring" element={<MonitoringPage />} />
-        <Route path="/reviews" element={<SarReviewsPage />} />
-        <Route path="/sar/:id" element={<SarReviewPage />} />
-        <Route path="/audit" element={<AuditPage />} />
-        <Route path="/profile" element={<ProfilePage />} />
+      <Route element={<RequireAuth />}>
+        <Route element={<AppLayout />}>
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/companies" element={<CompaniesPage />} />
+          <Route path="/companies/:id" element={<CompanyDetailPage />} />
+          <Route path="/companies/:companyId/execute" element={<AgentExecution />} />
+          <Route path="/monitoring" element={<MonitoringPage />} />
+          <Route path="/reviews" element={<SarReviewsPage />} />
+          <Route path="/sar/:id" element={<SarReviewPage />} />
+          <Route path="/audit" element={<AuditPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+        </Route>
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

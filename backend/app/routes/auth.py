@@ -9,7 +9,7 @@ from app.models.user import User
 from app.core.security import get_password_hash, verify_password, create_access_token, decode_access_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 # Pydantic Schemas
@@ -39,9 +39,15 @@ class TokenResponse(BaseModel):
 
 # Dependency to get current user from token
 def get_current_user_dep(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token = credentials.credentials
     payload = decode_access_token(token)
     if not payload:

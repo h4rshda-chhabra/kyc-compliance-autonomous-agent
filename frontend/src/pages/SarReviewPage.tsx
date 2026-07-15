@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, CheckCircle2, Download, XCircle } from "lucide-react";
 import { ErrorState } from "@/components/ErrorState";
 import { PageHeader } from "@/components/PageHeader";
@@ -13,6 +13,7 @@ import { useSarDecision, useSarReport } from "@/hooks/useSarReports";
 
 export function SarReviewPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: sar, isLoading, isError, refetch } = useSarReport(id);
   const { data: company } = useCompany(sar?.company_id);
   const decision = useSarDecision(id);
@@ -21,6 +22,9 @@ export function SarReviewPage() {
   async function handleDecision(next: "approved" | "rejected") {
     await decision.mutateAsync(next).catch(() => undefined);
     setLastDecision(next);
+    setTimeout(() => {
+      navigate("/reviews");
+    }, 1500);
   }
 
   return (
