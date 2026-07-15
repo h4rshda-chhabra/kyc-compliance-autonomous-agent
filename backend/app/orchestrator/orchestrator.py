@@ -547,20 +547,32 @@ class AgentOrchestrator:
                 ))
 
             for alert in audit_result.contamination_alerts:
-                self.db.add(Evidence(
-                    id=uuid.uuid4(),
-                    company_id=company.id,
-                    monitoring_run_id=run.id,
-                    evidence_type="connected_entity",
-                    source_url=f"/companies/{alert['linked_company_id']}",
-                    content=(
+                    alert_content = (
                         f"[CROSS-CONTAMINATION] Director '{alert['director_name']}' is also "
                         f"listed as a director at '{alert['linked_company_name']}' "
                         f"(Jurisdiction: {alert['linked_company_jurisdiction']}), "
                         f"which has an existing risk level of {alert['linked_company_risk'].upper()}. "
                         f"This shared directorship represents a connected-entity risk flag."
                     )
-                ))
+                    # Deduplicate: only insert if this exact alert isn't already stored
+                    existing = (
+                        self.db.query(Evidence)
+                        .filter(
+                            Evidence.company_id == company.id,
+                            Evidence.evidence_type == "connected_entity",
+                            Evidence.content == alert_content,
+                        )
+                        .first()
+                    )
+                    if not existing:
+                        self.db.add(Evidence(
+                            id=uuid.uuid4(),
+                            company_id=company.id,
+                            monitoring_run_id=run.id,
+                            evidence_type="connected_entity",
+                            source_url=f"/companies/{alert['linked_company_id']}",
+                            content=alert_content,
+                        ))
 
             for event_info in audit_result.timeline_events_data:
                 self.db.add(TimelineEvent(
@@ -702,6 +714,7 @@ class AgentOrchestrator:
                 "company_id": audit_result.company_id,
                 "risk_score": audit_result.risk_score,
                 "risk_level": audit_result.risk_level,
+                "rationale": audit_result.rationale_summary,
                 "sanctions_hits": len(audit_result.sanctions_alerts),
                 "media_hits": len(audit_result.adverse_media_alerts),
                 "material_change": material_change_result.material_change_detected,

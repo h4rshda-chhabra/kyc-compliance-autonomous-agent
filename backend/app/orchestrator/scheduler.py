@@ -20,12 +20,16 @@ scheduler = BackgroundScheduler()
 SWEEP_JOB_ID = "continuous_monitoring_sweep"
 
 
-def run_monitoring_sweep(company_ids: list[str] | None = None) -> None:
+def run_monitoring_sweep(company_ids: list[str] | None = None, trigger_type: str = "scheduled") -> None:
     """Re-runs the audit for every company (or a targeted subset) that has completed at least one scan.
 
     When running the standard periodic scheduler sweep (company_ids is None), this filters
     companies to only run re-audits for those that are due for news monitoring based on their
     configured monitoring policy (news_monitoring_enabled and news_monitoring_interval_minutes).
+
+    `trigger_type` is recorded on each resulting MonitoringRun — callers driving a targeted
+    sweep for a specific reason (e.g. a watchlist update) should pass their own label instead
+    of the default "scheduled", so the monitoring history reflects why the run happened.
     """
     from datetime import datetime, timedelta, UTC
     from app.orchestrator.pipeline import run_company_audit
@@ -66,7 +70,7 @@ def run_monitoring_sweep(company_ids: list[str] | None = None) -> None:
 
         for company in companies:
             try:
-                run_company_audit(company_id=company.id, db=db, trigger_type="scheduled")
+                run_company_audit(company_id=company.id, db=db, trigger_type=trigger_type)
             except Exception:
                 logger.exception("Scheduled audit failed for company %s", company.id)
     finally:

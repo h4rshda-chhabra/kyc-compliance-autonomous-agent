@@ -82,6 +82,21 @@ export function SarStatusBadge({ status }: { status: string }) {
   return <StatusBadge value={status} styles={sarStatusStyles} />;
 }
 
+// Draft SARs are the ones sitting in the reviewer's queue awaiting action —
+// call that out since the neutral "draft" badge alone reads as inert, not actionable.
+export function NeedsReviewPulse({ status }: { status: string }) {
+  if (status !== "draft") return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+      <span className="relative flex size-2">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
+        <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+      </span>
+      Needs review
+    </span>
+  );
+}
+
 const decisionStyles: Record<string, string> = {
   pending: neutral,
   approved: emerald,

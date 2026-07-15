@@ -120,7 +120,7 @@ def simulate_watchlist_update(db: Session) -> dict:
             list(affected_company_ids),
         )
         from app.orchestrator.scheduler import run_monitoring_sweep
-        run_monitoring_sweep(company_ids=list(affected_company_ids))
+        run_monitoring_sweep(company_ids=list(affected_company_ids), trigger_type="watchlist_update")
     else:
         logger.info("[WATCHLIST SIM] No monitored companies matched the demo watchlist entries.")
 

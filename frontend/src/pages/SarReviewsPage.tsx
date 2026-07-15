@@ -3,7 +3,7 @@ import { FileText } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { PageHeader } from "@/components/PageHeader";
-import { SarStatusBadge } from "@/components/status-badges";
+import { NeedsReviewPulse, SarStatusBadge } from "@/components/status-badges";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -69,7 +69,10 @@ export function SarReviewsPage() {
                       {companyName(sar.company_id)}
                     </TableCell>
                     <TableCell>
-                      <SarStatusBadge status={sar.status} />
+                      <div className="flex items-center gap-2">
+                        <SarStatusBadge status={sar.status} />
+                        <NeedsReviewPulse status={sar.status} />
+                      </div>
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground">
                       {new Date(sar.created_at).toLocaleDateString()}

@@ -1,4 +1,5 @@
-import { Link, useParams } from "react-router-dom";
+import { useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   Building2,
@@ -11,17 +12,19 @@ import {
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { PageHeader } from "@/components/PageHeader";
-import { CompanyStatusBadge, RiskBadge, SarStatusBadge } from "@/components/status-badges";
+import { CompanyStatusBadge, NeedsReviewPulse, RiskBadge, SarStatusBadge } from "@/components/status-badges";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { RiskGauge } from "@/components/charts/RiskGauge";
 import { useCompany, useUpdateCompanyCadence } from "@/hooks/useCompanies";
 import { useCompanyEvidence, useCompanyRiskReport, useCompanyTimeline } from "@/hooks/useReports";
 import { useTriggerMonitoringRun } from "@/hooks/useMonitoringRuns";
 import { useSarReports } from "@/hooks/useSarReports";
+import { previewLines } from "@/lib/utils";
 
 
 function DetailRow({
@@ -237,10 +240,15 @@ function TimelineTab({ companyId }: { companyId: string }) {
   );
 }
 
-function ReportsTab({ companyId }: { companyId: string }) {
+const EVIDENCE_PAGE_SIZE = 10;
+
+function ReportsTab({ companyId, companyName }: { companyId: string; companyName: string }) {
   const { data: evidence, isLoading: evidenceLoading } = useCompanyEvidence(companyId);
   const { data: sarReports, isLoading: sarLoading } = useSarReports();
   const companySars = (sarReports ?? []).filter((s) => s.company_id === companyId);
+  const [showAllEvidence, setShowAllEvidence] = useState(false);
+  const visibleEvidence =
+    showAllEvidence || !evidence ? evidence : evidence.slice(0, EVIDENCE_PAGE_SIZE);
 
   return (
     <div className="space-y-6">
@@ -263,12 +271,20 @@ function ReportsTab({ companyId }: { companyId: string }) {
                 <li key={sar.id}>
                   <Link
                     to={`/sar/${sar.id}`}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5 transition-colors hover:border-primary/40 hover:bg-muted/50"
+                    className="flex flex-col gap-1.5 rounded-lg border border-border px-3 py-2.5 transition-colors hover:border-primary/40 hover:bg-muted/50"
                   >
-                    <span className="text-sm font-medium text-foreground">
-                      SAR {sar.id.slice(0, 8)}
-                    </span>
-                    <SarStatusBadge status={sar.status} />
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-foreground">
+                        {companyName} — {new Date(sar.created_at).toLocaleDateString()}
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <NeedsReviewPulse status={sar.status} />
+                        <SarStatusBadge status={sar.status} />
+                      </div>
+                    </div>
+                    {sar.narrative ? (
+                      <p className="text-xs text-muted-foreground line-clamp-2">{previewLines(sar.narrative)}</p>
+                    ) : null}
                   </Link>
                 </li>
               ))}
@@ -288,7 +304,7 @@ function ReportsTab({ companyId }: { companyId: string }) {
             <EmptyState title="No evidence collected yet" />
           ) : (
             <ul className="space-y-2">
-              {evidence.map((item) => (
+              {visibleEvidence!.map((item) => (
                 <li key={item.id} className="rounded-lg border border-border px-3 py-2.5">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline" className="capitalize">
@@ -305,6 +321,16 @@ function ReportsTab({ companyId }: { companyId: string }) {
               ))}
             </ul>
           )}
+          {evidence && evidence.length > EVIDENCE_PAGE_SIZE ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-3"
+              onClick={() => setShowAllEvidence((prev) => !prev)}
+            >
+              {showAllEvidence ? "Show less" : `Show all ${evidence.length}`}
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </div>
@@ -313,6 +339,8 @@ function ReportsTab({ companyId }: { companyId: string }) {
 
 export function CompanyDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab") ?? "overview";
   const { data: company, isLoading, isError, refetch } = useCompany(id);
   const triggerRun = useTriggerMonitoringRun();
 
@@ -345,28 +373,43 @@ export function CompanyDetailPage() {
               <div className="flex items-center gap-2">
                 <CompanyStatusBadge status={company.monitoring_status} />
                 <RiskBadge level={company.risk_level} />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={triggerRun.isPending}
-                  onClick={() => triggerRun.mutate(company.id)}
-                >
-                  <RefreshCw
-                    data-icon="inline-start"
-                    className={triggerRun.isPending ? "animate-spin" : undefined}
-                  />
-                  {triggerRun.isPending ? "Scanning..." : "Scan now"}
-                </Button>
-                <Link to={`/companies/${company.id}/execute`}>
-                  <Button size="sm">
-                    Autonomous Scan
-                  </Button>
-                </Link>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={triggerRun.isPending}
+                        onClick={() => triggerRun.mutate(company.id)}
+                      />
+                    }
+                  >
+                    <RefreshCw
+                      data-icon="inline-start"
+                      className={triggerRun.isPending ? "animate-spin" : undefined}
+                    />
+                    {triggerRun.isPending ? "Scanning..." : "Quick Scan"}
+                  </TooltipTrigger>
+                  <TooltipContent>Fast background scan — no live execution view</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Link
+                        to={`/companies/${company.id}/execute`}
+                        className={buttonVariants({ size: "sm" })}
+                      />
+                    }
+                  >
+                    Full Audit
+                  </TooltipTrigger>
+                  <TooltipContent>Runs all 6 AI agents with live execution view and SAR generation</TooltipContent>
+                </Tooltip>
               </div>
             }
           />
 
-          <Tabs defaultValue="overview">
+          <Tabs defaultValue={initialTab}>
             <TabsList variant="line">
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="timeline">Timeline</TabsTrigger>
@@ -379,7 +422,7 @@ export function CompanyDetailPage() {
               <TimelineTab companyId={company.id} />
             </TabsContent>
             <TabsContent value="reports" className="pt-4">
-              <ReportsTab companyId={company.id} />
+              <ReportsTab companyId={company.id} companyName={company.legal_name} />
             </TabsContent>
           </Tabs>
         </>

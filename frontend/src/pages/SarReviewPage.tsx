@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { ArrowLeft, CheckCircle2, Download, XCircle } from "lucide-react";
 import { ErrorState } from "@/components/ErrorState";
 import { PageHeader } from "@/components/PageHeader";
-import { SarStatusBadge } from "@/components/status-badges";
+import { NeedsReviewPulse, SarStatusBadge } from "@/components/status-badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -52,9 +52,14 @@ export function SarReviewPage() {
       ) : (
         <>
           <PageHeader
-            title={`SAR ${sar.id.slice(0, 8)}`}
-            description={company?.legal_name || undefined}
-            action={<SarStatusBadge status={sar.status} />}
+            title={`${company?.legal_name || "SAR"} — ${new Date(sar.created_at).toLocaleDateString()}`}
+            description={company?.legal_name ? undefined : `SAR ${sar.id.slice(0, 8)}`}
+            action={
+              <div className="flex items-center gap-2">
+                <NeedsReviewPulse status={sar.status} />
+                <SarStatusBadge status={sar.status} />
+              </div>
+            }
           />
 
           <Card>

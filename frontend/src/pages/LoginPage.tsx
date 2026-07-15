@@ -1,12 +1,19 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { LoaderCircle, Sparkles } from "lucide-react";
+import { LoaderCircle, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/PasswordInput";
 import { useLogin } from "@/hooks/useAuth";
+import { SESSION_EXPIRED_KEY } from "@/services/apiClient";
+
+function readAndClearSessionExpired(): boolean {
+  const expired = sessionStorage.getItem(SESSION_EXPIRED_KEY) === "1";
+  if (expired) sessionStorage.removeItem(SESSION_EXPIRED_KEY);
+  return expired;
+}
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -24,6 +31,7 @@ export function LoginPage() {
   const [errors, setErrors] = useState<LoginErrors>({});
   const [demoLoading, setDemoLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [showSessionExpired, setShowSessionExpired] = useState(readAndClearSessionExpired);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -67,6 +75,20 @@ export function LoginPage() {
           Sign in to your compliance workspace.
         </p>
       </div>
+
+      {showSessionExpired ? (
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-300/50 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+          <span>Your session has expired. Please sign in again.</span>
+          <button
+            type="button"
+            onClick={() => setShowSessionExpired(false)}
+            aria-label="Dismiss"
+            className="shrink-0 text-amber-800/70 hover:text-amber-800 dark:text-amber-400/70 dark:hover:text-amber-400"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      ) : null}
 
       {formError ? (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">

@@ -1,20 +1,33 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
-
+import { FileText, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { RiskBadge } from "@/components/status-badges";
+import { RiskGauge } from "@/components/charts/RiskGauge";
 import { apiClient } from "@/services/apiClient";
-import type { Company } from "@/types/models";
+import type { Company, RiskLevel } from "@/types/models";
+
+interface SarOutcome {
+  generated_new: boolean;
+  id: string | null;
+  status: string | null;
+  created_at: string | null;
+  message: string | null;
+}
 
 interface AuditResult {
   run_id: string;
   company_id: string;
   risk_score: number;
-  risk_level: string;
+  risk_level: RiskLevel;
+  rationale: string | null;
   sanctions_hits: number;
   media_hits: number;
+  material_change: boolean;
+  sar: SarOutcome;
 }
 
 const STEPS = [
@@ -35,7 +48,7 @@ export function AgentExecution() {
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
 
   // Fetch company details to show on the header
-  const { data: company } = useQuery({
+  const { data: company, isLoading: isCompanyLoading } = useQuery({
     queryKey: ["company", companyId],
     queryFn: async () => {
       const res = await apiClient.get<Company>(`/companies/${companyId}`);
@@ -110,10 +123,15 @@ export function AgentExecution() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Autonomous Agent Execution</h1>
           <p className="text-sm text-muted-foreground">
-            Monitor and audit corporate customer: <strong className="text-foreground">{company?.legal_name}</strong>
+            Monitor and audit corporate customer:{" "}
+            {isCompanyLoading ? (
+              <span className="inline-block h-4 w-32 align-middle bg-muted rounded animate-pulse" />
+            ) : (
+              <strong className="text-foreground">{company?.legal_name}</strong>
+            )}
           </p>
         </div>
-        <Link to={`/companies/${companyId}`}>
+        <Link to={mutation.isSuccess ? `/companies/${companyId}?tab=reports` : `/companies/${companyId}`}>
           <Button variant="outline" size="sm">Back to Profile</Button>
         </Link>
       </div>
@@ -175,21 +193,82 @@ export function AgentExecution() {
             </CardContent>
           </Card>
 
+          {mutation.isSuccess && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base font-semibold">Scan Result</CardTitle>
+                <CardDescription>Outcome of this audit run — no need to navigate elsewhere to see it.</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 items-center">
+                  <RiskGauge score={mutation.data.risk_score} />
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                      <RiskBadge level={mutation.data.risk_level} />
+                      {mutation.data.material_change && (
+                        <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">Material change detected</span>
+                      )}
+                    </div>
+                    <div className="flex gap-4 text-sm">
+                      <span><strong className="tabular-nums">{mutation.data.sanctions_hits}</strong> <span className="text-muted-foreground">sanctions hits</span></span>
+                      <span><strong className="tabular-nums">{mutation.data.media_hits}</strong> <span className="text-muted-foreground">media hits</span></span>
+                    </div>
+                    {mutation.data.rationale && (
+                      <p className="text-xs text-muted-foreground line-clamp-2">{mutation.data.rationale}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-2 border-t">
+                  {mutation.data.sar.id ? (
+                    <>
+                      <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <span className="text-sm">
+                        {mutation.data.sar.generated_new ? "New SAR generated for this run." : "Existing SAR remains current."}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span className="text-sm text-muted-foreground">
+                        No SAR generated — {mutation.data.sar.message ?? `risk score (${mutation.data.risk_score}) is below the SAR threshold`}.
+                      </span>
+                    </>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="flex gap-4 items-center justify-end">
             {mutation.isSuccess && (
               <>
-                <Link to="/sar-review">
-                  <Button variant="outline">Review Draft SAR</Button>
-                </Link>
-                <Link to={`/companies/${companyId}`}>
-                  <Button>View Risk Breakdown</Button>
+                {mutation.data.sar.id ? (
+                  <Link to={`/sar/${mutation.data.sar.id}`}>
+                    <Button variant="outline">
+                      <FileText className="w-4 h-4 mr-1.5" />
+                      Review SAR
+                    </Button>
+                  </Link>
+                ) : (
+                  <Button variant="outline" disabled>
+                    <FileText className="w-4 h-4 mr-1.5" />
+                    No SAR to review
+                  </Button>
+                )}
+                <Button variant="outline" onClick={() => { mutation.reset(); setLogs([]); setActiveStepIndex(-1); }}>
+                  <RotateCcw className="w-4 h-4 mr-1.5" />
+                  Run another scan
+                </Button>
+                <Link to={`/companies/${companyId}?tab=reports`}>
+                  <Button>View Risk Profile</Button>
                 </Link>
               </>
             )}
-            
+
             {!mutation.isSuccess && (
-              <Button 
-                onClick={startAudit} 
+              <Button
+                onClick={startAudit}
                 disabled={isSimulating}
                 className="w-48"
               >

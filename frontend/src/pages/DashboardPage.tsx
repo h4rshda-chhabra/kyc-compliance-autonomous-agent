@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Building2, ClipboardList, Radar, TriangleAlert } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -28,6 +28,7 @@ const statCards = [
 ];
 
 export function DashboardPage() {
+  const navigate = useNavigate();
   const { data: summary, isLoading, isError, refetch } = useDashboardSummary();
   const { data: companies } = useCompanies();
   const { data: runs } = useMonitoringRuns();
@@ -108,17 +109,29 @@ export function DashboardPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Company</TableHead>
+                    <TableHead>Trigger</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Started</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {recentRuns.map((run) => (
-                    <TableRow key={run.id}>
+                    <TableRow
+                      key={run.id}
+                      className="cursor-pointer"
+                      onClick={() => navigate(`/companies/${run.company_id}?tab=reports`)}
+                    >
                       <TableCell className="font-medium text-foreground">
-                        <Link to={`/companies/${run.company_id}`} className="hover:underline">
+                        <Link
+                          to={`/companies/${run.company_id}?tab=reports`}
+                          className="hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           {companyName(run.company_id)}
                         </Link>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground capitalize">
+                        {run.trigger_type.replace(/_/g, " ")}
                       </TableCell>
                       <TableCell>
                         <RunStatusBadge status={run.status} />
