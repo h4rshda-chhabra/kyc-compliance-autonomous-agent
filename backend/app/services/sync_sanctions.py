@@ -91,11 +91,12 @@ def calculate_database_diff(old_db_path: Path, new_db_path: Path) -> Tuple[int, 
       (added: int, updated: int, removed: int)
     """
     if not old_db_path.exists():
-        # First sync, everything in new is added
         conn = sqlite3.connect(new_db_path)
         try:
             total = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-            return total, 0, 0
+            # When old doesn't exist, all new IDs are added
+            added_ids = [row[0] for row in conn.execute("SELECT id FROM entities")]
+            return total, 0, 0, added_ids, [], []
         finally:
             conn.close()
 
@@ -105,43 +106,45 @@ def calculate_database_diff(old_db_path: Path, new_db_path: Path) -> Tuple[int, 
         cur = conn.cursor()
 
         # Attach the old database file to query both databases in a single connection
-        # We absolute-path the file to be safe
         old_abs_path = os.path.abspath(old_db_path)
         cur.execute(f"ATTACH DATABASE ? AS old_db", (old_abs_path,))
 
-        # 1. Calculate added records count (in new but not in old)
+        # 1. Fetch added entity IDs (in new but not in old)
         cur.execute("""
-            SELECT COUNT(*) FROM entities
+            SELECT id FROM entities
             WHERE id NOT IN (SELECT id FROM old_db.entities)
         """)
-        added = cur.fetchone()[0]
+        added_ids = [row[0] for row in cur.fetchall()]
+        added = len(added_ids)
 
-        # 2. Calculate removed records count (in old but not in new)
+        # 2. Fetch removed entity IDs (in old but not in new)
         cur.execute("""
-            SELECT COUNT(*) FROM old_db.entities
+            SELECT id FROM old_db.entities
             WHERE id NOT IN (SELECT id FROM entities)
         """)
-        removed = cur.fetchone()[0]
+        removed_ids = [row[0] for row in cur.fetchall()]
+        removed = len(removed_ids)
 
-        # 3. Calculate updated records count (matching IDs but changed properties)
-        # We compare legal name and countries. We map NULL to empty strings for safe comparisons
+        # 3. Fetch updated entity IDs (matching IDs but changed properties)
         cur.execute("""
-            SELECT COUNT(*) FROM entities e
+            SELECT e.id FROM entities e
             JOIN old_db.entities o ON e.id = o.id
             WHERE COALESCE(e.name, '') != COALESCE(o.name, '')
                OR COALESCE(e.countries, '') != COALESCE(o.countries, '')
         """)
-        updated = cur.fetchone()[0]
+        updated_ids = [row[0] for row in cur.fetchall()]
+        updated = len(updated_ids)
 
         cur.execute("DETACH DATABASE old_db")
-        return added, updated, removed
+        return added, updated, removed, added_ids, updated_ids, removed_ids
 
     except Exception as e:
         logger.error("Failed to calculate database delta differences using SQL ATTACH: %s", str(e))
-        return 0, 0, 0
+        return 0, 0, 0, [], [], []
     finally:
         if conn:
             conn.close()
+
 
 
 
@@ -176,6 +179,10 @@ def run_sanctions_sync(feed_url: Optional[str] = None) -> Dict[str, Any]:
     records_removed = 0
     total_records = 0
     dataset_changed = False
+
+    added_ids = []
+    updated_ids = []
+    removed_ids = []
 
     try:
         # Step 1: Ingestion (Download Feed)
@@ -212,8 +219,8 @@ def run_sanctions_sync(feed_url: Optional[str] = None) -> Dict[str, Any]:
 
             if old_checksum != new_checksum:
                 dataset_changed = True
-                # Calculate differences (delta statistics)
-                records_added, records_updated, records_removed = calculate_database_diff(active_path, temp_path)
+                # Calculate differences (delta statistics and ID lists)
+                records_added, records_updated, records_removed, added_ids, updated_ids, removed_ids = calculate_database_diff(active_path, temp_path)
 
             # Step 4: Atomic Swap
             # Copy to target path safely. We keep the temp file as our versioned history/rollback backup.
@@ -255,16 +262,35 @@ def run_sanctions_sync(feed_url: Optional[str] = None) -> Dict[str, Any]:
         )
         db.add(audit_log)
         db.commit()
-        db.close()
 
     # Step 6: Trigger Monitoring if dataset changed
     if success and dataset_changed:
-        logger.info("Watchlist dataset change detected! Launching background continuous screening re-audit...")
-        # Since scheduler handles sweep running in background, we launch it asynchronously
+        logger.info("Watchlist dataset change detected! Triggering impact analysis...")
         try:
-            run_monitoring_sweep()
+            from app.services.sanctions_impact_analyzer import determine_affected_companies
+            affected_company_ids = determine_affected_companies(
+                db=db,
+                old_db_path=active_path.parent / f"sanctions_lookup_{version_tag}.db", # Point to previous or versioned copy
+                new_db_path=active_path,
+                added_ids=added_ids,
+                updated_ids=updated_ids,
+                removed_ids=removed_ids
+            )
+            
+            if affected_company_ids:
+                logger.info("Triggering targeted screening for %d affected company(ies)...", len(affected_company_ids))
+                run_monitoring_sweep(company_ids=list(affected_company_ids))
+            else:
+                logger.info("No active companies or directors are affected by the watchlist delta. Skipping re-screening.")
         except Exception as e:
-            logger.error("Failed to launch automated monitoring sweep post-sync: %s", str(e))
+            logger.error("Failed to run targeted sanctions impact analysis. Falling back to full monitoring sweep: %s", str(e))
+            try:
+                run_monitoring_sweep()
+            except Exception:
+                logger.exception("Fallback full monitoring sweep failed.")
+    
+    db.close()
+
 
     return {
         "success": success,

@@ -20,21 +20,21 @@ scheduler = BackgroundScheduler()
 SWEEP_JOB_ID = "continuous_monitoring_sweep"
 
 
-def run_monitoring_sweep() -> None:
-    """Re-runs the audit for every company that has completed at least one scan.
+def run_monitoring_sweep(company_ids: list[str] | None = None) -> None:
+    """Re-runs the audit for every company (or a targeted subset) that has completed at least one scan.
 
-    Companies still in "onboarding" (never scanned) are skipped — they only
-    enter continuous monitoring once a first manual/onboarding run has run.
-    Each company's run only turns into new evidence/timeline/SAR output if
-    RiskChangeDetector finds a material change; otherwise it's just a
-    recorded, no-op confirmation (see app.orchestrator.pipeline).
+    Companies still in "onboarding" (never scanned) are skipped.
     """
     from app.orchestrator.pipeline import run_company_audit
 
     db = SessionLocal()
     try:
-        companies = db.query(Company).filter(Company.monitoring_status != "onboarding").all()
-        logger.info("Continuous monitoring sweep starting for %d company(ies).", len(companies))
+        query = db.query(Company).filter(Company.monitoring_status != "onboarding")
+        if company_ids is not None:
+            query = query.filter(Company.id.in_(company_ids))
+        
+        companies = query.all()
+        logger.info("Continuous monitoring sweep starting for %d company(ies) (Targeted=%s).", len(companies), company_ids is not None)
 
         for company in companies:
             try:
@@ -43,6 +43,7 @@ def run_monitoring_sweep() -> None:
                 logger.exception("Scheduled audit failed for company %s", company.id)
     finally:
         db.close()
+
 
 
 def start_scheduler() -> None:
