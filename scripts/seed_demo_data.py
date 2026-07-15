@@ -125,7 +125,7 @@ def seed():
 
             # Insert Company
             company = Company(
-                id=uuid.uuid4(),
+                id=str(uuid.uuid4()),
                 legal_name=comp_name,
                 registration_number=comp_data["registration_number"],
                 jurisdiction=comp_data["jurisdiction"],
