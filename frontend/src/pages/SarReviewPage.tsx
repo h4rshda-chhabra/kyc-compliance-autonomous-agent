@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
 import { ArrowLeft, CheckCircle2, Download, XCircle } from "lucide-react";
 import { ErrorState } from "@/components/ErrorState";
 import { PageHeader } from "@/components/PageHeader";
@@ -62,7 +63,9 @@ export function SarReviewPage() {
             </CardHeader>
             <CardContent>
               {sar.narrative ? (
-                <p className="text-sm leading-relaxed text-foreground">{sar.narrative}</p>
+                <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:font-semibold prose-hr:my-4">
+                  <ReactMarkdown>{sar.narrative}</ReactMarkdown>
+                </div>
               ) : (
                 <p className="text-sm text-muted-foreground">No narrative has been drafted yet.</p>
               )}

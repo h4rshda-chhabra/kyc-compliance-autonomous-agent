@@ -18,8 +18,11 @@ import { useCompanies } from "@/hooks/useCompanies";
 import { useSarReports } from "@/hooks/useSarReports";
 
 export function SarReviewsPage() {
-  const { data: sarReports, isLoading, isError, refetch } = useSarReports();
+  const { data: allSarReports, isLoading, isError, refetch } = useSarReports();
   const { data: companies } = useCompanies();
+  // Archived SARs are superseded-but-preserved history — surface them on the
+  // company detail page, not in the "awaiting review" queue.
+  const sarReports = allSarReports?.filter((sar) => sar.status !== "archived");
 
   const companyName = (companyId: string) =>
     companies?.find((c) => c.id === companyId)?.legal_name || companyId.slice(0, 8);

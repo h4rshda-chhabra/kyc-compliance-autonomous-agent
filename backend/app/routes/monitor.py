@@ -60,7 +60,10 @@ def trigger_manual_run(company_id: str, db: Session = Depends(get_db)) -> dict:
             id=entity.id,
             legal_name=entity.name,
             jurisdiction=entity.countries,
-            industry=entity.source,
+            # The sanctions dataset has no industry field — `entity.source` is the
+            # sanctions list name (e.g. "OFAC SDN (CUBA)"), not an industry, so it
+            # must not be mapped here. Leave unset; the SAR template falls back to "N/A".
+            industry=None,
             monitoring_status="onboarding",
             risk_level="unknown",
             onboarded_at=datetime.now(UTC),
@@ -85,3 +88,35 @@ def trigger_manual_run(company_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sync/history")
+def get_sync_history(db: Session = Depends(get_db)) -> list[dict]:
+    from app.models.sanctions_sync_audit import SanctionsSyncAudit
+    logs = db.query(SanctionsSyncAudit).order_by(SanctionsSyncAudit.sync_timestamp.desc()).all()
+    return [
+        {
+            "id": str(log.id),
+            "sync_timestamp": log.sync_timestamp,
+            "provider": log.provider,
+            "dataset_version": log.dataset_version,
+            "records_added": log.records_added,
+            "records_updated": log.records_updated,
+            "records_removed": log.records_removed,
+            "total_records": log.total_records,
+            "sync_duration_seconds": log.sync_duration_seconds,
+            "success": log.success,
+            "failure_reason": log.failure_reason,
+        }
+        for log in logs
+    ]
+
+
+@router.post("/sync")
+def trigger_sanctions_sync(feed_url: str | None = None) -> dict:
+    from app.services.sync_sanctions import run_sanctions_sync
+    result = run_sanctions_sync(feed_url=feed_url)
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["error"])
+    return result
+

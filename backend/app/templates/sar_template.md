@@ -45,24 +45,29 @@
 
 ---
 
-## 7. Adverse Media Findings
+## 7. Cross-Director Risk Contamination
+{{ contamination_findings_details }}
+
+---
+
+## 8. Adverse Media Findings
 {{ adverse_media_details }}
 
 ---
 
-## 8. Risk Assessment & Explained Risk
+## 9. Risk Assessment & Explained Risk
 * **Calculated Risk Score**: {{ risk_score }}/100
 * **Risk Level**: {{ risk_level }}
 * **System Rationale**: {{ risk_rationale }}
 
 ---
 
-## 9. Analyst Recommendation & Confidence Score
+## 10. Analyst Recommendation & Confidence Score
 * **Recommendation**: {{ analyst_recommendation }}
 * **Decision Rationale**: {{ analyst_rationale }}
 * **System Confidence Score**: {{ confidence_score }}/100
 
 ---
 
-## 10. Narrative Summary
+## 11. Narrative Summary
 {{ narrative_summary_text }}

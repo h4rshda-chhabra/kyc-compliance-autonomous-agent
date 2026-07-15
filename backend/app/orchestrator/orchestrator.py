@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.services.rss_news_service import RSSNewsService
 from app.services.news_classifier import NewsClassifier
-from app.services.risk_change_detector import ChangeResult
+from app.services.risk_change_detector import MaterialChangeResult
+from app.services.sar_decision_service import SARDecision
 from app.agents.entity_resolution_agent import EntityResolutionAgent
 from app.orchestrator.audit_result import AuditResult
 
@@ -34,16 +35,19 @@ settings = get_settings()
 class AgentOrchestrator:
     """Orchestrates the continuous audit workflow.
 
-    Split into two stages so the "is this worth alerting a human about?"
-    decision lives outside the orchestrator (see RiskChangeDetector):
+    Collection, diffing, and the SAR decision are three separate stages so
+    none of "did anything change" or "is this worth a SAR" lives here:
 
     1. execute_audit() — collects sanctions/adverse-media evidence, resolves
        entities, and calculates a risk reading. Returns an AuditResult. Does
        NOT decide materiality and does NOT write SAR/evidence rows.
-    2. finalize(audit_result, change_result) — given an externally-computed
-       ChangeResult, persists findings accordingly: a material change writes
-       evidence, a timeline entry, and a SAR draft; a routine confirmation
-       only updates monitoring history and the audit-state baseline.
+    2. (external) RiskChangeDetector.compare() diffs the AuditResult against
+       the company's prior audit state -> MaterialChangeResult.
+    3. (external) SARDecisionService.decide() combines that with the
+       sanctions/threshold gate and any existing SAR -> SARDecision.
+    4. finalize(audit_result, material_change_result, sar_decision) — always
+       persists evidence, timeline events, risk history, and the audit-state
+       baseline; only (re)generates the SAR document when sar_decision says to.
     """
 
     def __init__(self, company_id: str, db: Session) -> None:
@@ -69,6 +73,62 @@ class AgentOrchestrator:
         self._company: Optional[Company] = None
         self._directors: List[CompanyDirector] = []
         self._run: Optional[MonitoringRun] = None
+
+    def _check_cross_company_contamination(
+        self,
+        company_id: str,
+        directors: list,
+    ) -> list:
+        """Queries PostgreSQL for directors shared with other Medium/High-risk companies.
+
+        For each director of the current company, this method looks for other companies
+        in the database that:
+          1. Share the exact same director full_name.
+          2. Have an existing risk_level of 'medium' or 'high'.
+
+        This surfaces a major KYC loophole: a director who was cleared for Company A
+        may have already been flagged when screened under Company B.
+
+        Returns a list of contamination alert dicts.
+        """
+        contamination_alerts = []
+        if not directors:
+            return contamination_alerts
+
+        try:
+            for director in directors:
+                # Find other company_directors rows with the same full_name, belonging to a
+                # different company that has already been risk-assessed as medium/high.
+                linked_rows = (
+                    self.db.query(CompanyDirector, Company)
+                    .join(Company, Company.id == CompanyDirector.company_id)
+                    .filter(
+                        CompanyDirector.full_name == director.full_name,
+                        CompanyDirector.company_id != company_id,
+                        Company.risk_level.in_(["medium", "high"]),
+                    )
+                    .all()
+                )
+
+                for linked_dir, linked_company in linked_rows:
+                    alert = {
+                        "director_name": director.full_name,
+                        "linked_company_id": linked_company.id,
+                        "linked_company_name": linked_company.legal_name,
+                        "linked_company_risk": linked_company.risk_level,
+                        "linked_company_jurisdiction": linked_company.jurisdiction or "Unknown",
+                    }
+                    contamination_alerts.append(alert)
+                    logger.warning(
+                        "[CROSS-CONTAMINATION] Director '%s' is also a director at '%s' (%s risk).",
+                        director.full_name,
+                        linked_company.legal_name,
+                        linked_company.risk_level.upper(),
+                    )
+        except Exception as e:
+            logger.error("Cross-company contamination check failed: %s", str(e))
+
+        return contamination_alerts
 
     def _get_sqlite_candidates(self, name: str) -> List[Dict[str, Any]]:
         """Queries the preprocessed SQLite database for raw matching targets."""
@@ -175,6 +235,7 @@ class AgentOrchestrator:
                 dob=None
             )
             for hit in resolved_company:
+                hit["subject_type"] = "company"
                 sanctions_alerts.append(hit)
                 timeline_events_data.append({
                     "event_type": "sanction_match",
@@ -197,6 +258,7 @@ class AgentOrchestrator:
                 )
 
                 for hit in resolved:
+                    hit["subject_type"] = "director"
                     sanctions_alerts.append(hit)
                     timeline_events_data.append({
                         "event_type": "sanction_match",
@@ -234,7 +296,29 @@ class AgentOrchestrator:
                             },
                         })
 
-            # 5. Step: Risk Score Calculation Logic
+            # 5. Step: Cross-Director Risk Contamination Check
+            # Queries PostgreSQL for directors shared with already-flagged companies.
+            contamination_alerts = self._check_cross_company_contamination(
+                company_id=str(company.id),
+                directors=directors,
+            )
+
+            for alert in contamination_alerts:
+                timeline_events_data.append({
+                    "event_type": "cross_company_contamination",
+                    "description": (
+                        f"Director '{alert['director_name']}' is also listed at "
+                        f"'{alert['linked_company_name']}' which has {alert['linked_company_risk'].upper()} risk."
+                    ),
+                    "evidence": {
+                        "kind": "contamination",
+                        "director": alert["director_name"],
+                        "linked_company": alert["linked_company_name"],
+                        "linked_risk": alert["linked_company_risk"],
+                    }
+                })
+
+            # 6. Step: Risk Score Calculation Logic
             risk_score = 15.0
             risk_level = "low"
 
@@ -248,11 +332,29 @@ class AgentOrchestrator:
                 risk_score = max(risk_score, 40.0)
                 risk_level = "medium"
 
+            # Cross-director contamination escalation — applies on top of existing score
+            if contamination_alerts:
+                high_linked = any(a["linked_company_risk"] == "high" for a in contamination_alerts)
+                escalation = 30.0 if high_linked else 25.0
+                risk_score = min(100.0, risk_score + escalation)
+                if risk_level == "low":
+                    risk_level = "medium"
+
+            contamination_names = ", ".join(
+                f"'{a['director_name']}' → {a['linked_company_name']} ({a['linked_company_risk'].upper()})"
+                for a in contamination_alerts
+            )
+
             rationale_summary = "No adverse sanctions, PEPs, or media alerts resolved for this company."
             if risk_level == "high":
                 rationale_summary = "Severe risk identified. Director matched sanctioned watchlist."
+                if contamination_alerts:
+                    rationale_summary += f" Additionally, shared directors found at previously flagged companies: {contamination_names}."
             elif risk_level == "medium":
-                rationale_summary = "Medium risk flagged due to multiple negative adverse media matches."
+                if contamination_alerts:
+                    rationale_summary = f"Medium risk flagged. Shared directors detected at previously flagged entities: {contamination_names}."
+                else:
+                    rationale_summary = "Medium risk flagged due to multiple negative adverse media matches."
 
             # Current risk always reflects the latest scan, independent of whether
             # it's a material enough change to alert a human about.
@@ -280,6 +382,7 @@ class AgentOrchestrator:
                 rationale_summary=rationale_summary,
                 sanctions_alerts=sanctions_alerts,
                 adverse_media_alerts=adverse_media_alerts,
+                contamination_alerts=contamination_alerts,
                 timeline_events_data=timeline_events_data,
                 sanction_ids=sanction_ids,
                 news_count=len(adverse_media_alerts),
@@ -299,7 +402,7 @@ class AgentOrchestrator:
                 pass
             raise e
 
-    def _build_sar_narrative(self, audit_result: AuditResult, change_result: ChangeResult) -> str:
+    def _build_sar_narrative(self, audit_result: AuditResult, material_change_result: MaterialChangeResult) -> str:
         possible_template_paths = [
             "backend/app/templates/sar_template.md",
             "app/templates/sar_template.md",
@@ -325,6 +428,20 @@ class AgentOrchestrator:
         sanctions_str = "\n".join([f"* **{s['name']}**: Matched on {s['source']} (Score: {s['resolution_score']}%)" for s in audit_result.sanctions_alerts])
         media_str = "\n".join([f"* **{m['title']}** ({m['source']}): Classified as {m['category']} ({m['severity']})" for m in audit_result.adverse_media_alerts])
 
+        # Build contamination findings section
+        if audit_result.contamination_alerts:
+            contamination_rows = []
+            for alert in audit_result.contamination_alerts:
+                contamination_rows.append(
+                    f"* **Director**: {alert['director_name']} | "
+                    f"**Also listed at**: {alert['linked_company_name']} "
+                    f"(Jurisdiction: {alert['linked_company_jurisdiction']}, "
+                    f"Risk Level: **{alert['linked_company_risk'].upper()}**)"
+                )
+            contamination_str = "\n".join(contamination_rows)
+        else:
+            contamination_str = "* No cross-company director contamination detected."
+
         sar_narrative = template_content\
             .replace("{{ company_name }}", company.legal_name)\
             .replace("{{ jurisdiction }}", company.jurisdiction or "Unknown")\
@@ -337,11 +454,12 @@ class AgentOrchestrator:
             .replace("{{ subject_directors_list }}", directors_str if directors_str else "* None Listed")\
             .replace(
                 "{{ investigation_trigger_details }}",
-                change_result.change_summary or f"Audit initiated for {company.legal_name} based on {audit_result.trigger_type} trigger.",
+                material_change_result.change_summary or f"Audit initiated for {company.legal_name} based on {audit_result.trigger_type} trigger.",
             )\
             .replace("{{ timeline_events_markdown }}", timeline_str if timeline_str else "* No events logged")\
             .replace("{{ sanctions_findings_details }}", sanctions_str if sanctions_str else "* No sanctions found")\
             .replace("{{ pep_findings_details }}", "* No Politically Exposed Persons (PEPs) found")\
+            .replace("{{ contamination_findings_details }}", contamination_str)\
             .replace("{{ adverse_media_details }}", media_str if media_str else "* No negative news detected")\
             .replace("{{ risk_rationale }}", audit_result.rationale_summary)\
             .replace("{{ analyst_recommendation }}", "Reject Onboarding" if audit_result.risk_level == "high" else ("Escalate to Manual Review" if audit_result.risk_level == "medium" else "Approve Onboarding"))\
@@ -370,9 +488,15 @@ class AgentOrchestrator:
 
         return sar_narrative
 
-    def finalize(self, audit_result: AuditResult, change_result: ChangeResult) -> Dict[str, Any]:
-        """Persists execute_audit()'s findings according to an externally-computed
-        materiality decision, and refreshes the company's audit-state baseline.
+    def finalize(
+        self,
+        audit_result: AuditResult,
+        material_change_result: MaterialChangeResult,
+        sar_decision: SARDecision,
+    ) -> Dict[str, Any]:
+        """Persists execute_audit()'s findings. Evidence, monitoring history, risk
+        reports, and the audit-state baseline are always recorded — only the SAR
+        document itself is gated, and solely by sar_decision (see SARDecisionService).
         """
         company = self._company
         run = self._run
@@ -380,73 +504,112 @@ class AgentOrchestrator:
             raise RuntimeError("finalize() called before execute_audit()")
 
         try:
-            if change_result.material_change:
-                for hit in audit_result.sanctions_alerts:
-                    san_match = SanctionMatch(
-                        id=uuid.uuid4(),
-                        company_id=company.id,
-                        monitoring_run_id=run.id,
-                        list_name=hit["source"],
-                        matched_name=hit["name"],
-                        match_score=float(hit["resolution_score"]),
-                        status="pending_review"
+            # Evidence and monitoring history are recorded on every run, regardless
+            # of the SAR decision — routine sweeps still keep the record current.
+            for hit in audit_result.sanctions_alerts:
+                san_match = SanctionMatch(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    list_name=hit["source"],
+                    matched_name=hit["name"],
+                    match_score=float(hit["resolution_score"]),
+                    status="pending_review"
+                )
+                self.db.add(san_match)
+                self.db.add(Evidence(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    evidence_type="sanction",
+                    source_url=f"https://opensanctions.org/entities/{hit['id']}",
+                    content=f"Fuzzy resolution match {hit['resolution_score']}% found on global list {hit['source']}. Details: Name: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
+                ))
+
+            for art in audit_result.adverse_media_alerts:
+                self.db.add(NewsArticle(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    title=art["title"],
+                    url=art["url"],
+                    source=art["source"],
+                    sentiment="negative",
+                    published_at=datetime.utcnow()
+                ))
+                self.db.add(Evidence(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    evidence_type="adverse_media",
+                    source_url=art["url"],
+                    content=f"Adverse media article detected: {art['title']} ({art['category']} - {art['severity']})."
+                ))
+
+            for alert in audit_result.contamination_alerts:
+                self.db.add(Evidence(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    monitoring_run_id=run.id,
+                    evidence_type="connected_entity",
+                    source_url=f"/companies/{alert['linked_company_id']}",
+                    content=(
+                        f"[CROSS-CONTAMINATION] Director '{alert['director_name']}' is also "
+                        f"listed as a director at '{alert['linked_company_name']}' "
+                        f"(Jurisdiction: {alert['linked_company_jurisdiction']}), "
+                        f"which has an existing risk level of {alert['linked_company_risk'].upper()}. "
+                        f"This shared directorship represents a connected-entity risk flag."
                     )
-                    self.db.add(san_match)
-                    self.db.add(Evidence(
-                        id=uuid.uuid4(),
-                        company_id=company.id,
-                        monitoring_run_id=run.id,
-                        evidence_type="sanction",
-                        source_url=f"https://opensanctions.org/entities/{hit['id']}",
-                        content=f"Fuzzy resolution match {hit['resolution_score']}% found on global list {hit['source']}. Details: Name: {hit['name']}, DOB: {hit['dob']}, Country: {hit['countries']}"
-                    ))
+                ))
 
-                for art in audit_result.adverse_media_alerts:
-                    self.db.add(NewsArticle(
-                        id=uuid.uuid4(),
-                        company_id=company.id,
-                        monitoring_run_id=run.id,
-                        title=art["title"],
-                        url=art["url"],
-                        source=art["source"],
-                        sentiment="negative",
-                        published_at=datetime.utcnow()
-                    ))
-                    self.db.add(Evidence(
-                        id=uuid.uuid4(),
-                        company_id=company.id,
-                        monitoring_run_id=run.id,
-                        evidence_type="adverse_media",
-                        source_url=art["url"],
-                        content=f"Adverse media article detected: {art['title']} ({art['category']} - {art['severity']})."
-                    ))
-
-                for event_info in audit_result.timeline_events_data:
-                    self.db.add(TimelineEvent(
-                        id=uuid.uuid4(),
-                        company_id=company.id,
-                        event_type=event_info["event_type"],
-                        description=event_info["description"],
-                        occurred_at=datetime.utcnow()
-                    ))
-                # Summary event explaining *why* this run was material.
+            for event_info in audit_result.timeline_events_data:
                 self.db.add(TimelineEvent(
                     id=uuid.uuid4(),
                     company_id=company.id,
-                    event_type=change_result.change_type or "risk_change",
-                    description=change_result.change_summary or "Material risk change detected.",
+                    event_type=event_info["event_type"],
+                    description=event_info["description"],
+                    occurred_at=datetime.utcnow()
+                ))
+            if material_change_result.material_change_detected:
+                # Summary event explaining *why* the risk reading changed — purely
+                # descriptive, independent of whether a SAR gets (re)generated.
+                self.db.add(TimelineEvent(
+                    id=uuid.uuid4(),
+                    company_id=company.id,
+                    event_type=material_change_result.change_type,
+                    description=material_change_result.change_summary,
                     occurred_at=datetime.utcnow()
                 ))
 
-                sar_narrative = self._build_sar_narrative(audit_result, change_result)
-                self.db.add(SARReport(
+            self.db.add(RiskReport(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                monitoring_run_id=run.id,
+                risk_score=audit_result.risk_score,
+                risk_level=audit_result.risk_level,
+                rationale=audit_result.rationale_summary
+            ))
+
+            # SAR generation: the only part gated by SARDecisionService's rule
+            # (sanction found AND risk_score >= threshold). Not met -> the existing
+            # SAR (if any) is returned completely unchanged, never overwritten.
+            sar_payload: Dict[str, Any]
+            if sar_decision.generate_new:
+                # Archive rather than delete — preserves history instead of
+                # accumulating duplicate active drafts for the same company.
+                for stale_sar in sar_decision.stale_sars:
+                    stale_sar.status = "archived"
+
+                sar_narrative = self._build_sar_narrative(audit_result, material_change_result)
+                new_sar = SARReport(
                     id=uuid.uuid4(),
                     company_id=company.id,
                     monitoring_run_id=run.id,
                     status="draft",
                     narrative=sar_narrative,
                     created_at=datetime.utcnow()
-                ))
+                )
+                self.db.add(new_sar)
 
                 # Placeholder for a real notification channel (email/Slack/webhook).
                 self.db.add(AuditLog(
@@ -456,25 +619,38 @@ class AgentOrchestrator:
                     resource_type="company",
                     resource_id=str(company.id),
                     event_metadata={
-                        "change_type": change_result.change_type,
-                        "change_summary": change_result.change_summary,
+                        "sar_id": str(new_sar.id),
+                        "risk_score": audit_result.risk_score,
                         "risk_level": audit_result.risk_level,
                     }
                 ))
 
-                run.summary = f"Material change ({change_result.change_type}). Risk Level: {audit_result.risk_level.upper()} (Score: {audit_result.risk_score}/100)."
+                run.summary = f"New SAR generated. Risk Level: {audit_result.risk_level.upper()} (Score: {audit_result.risk_score}/100)."
+                sar_payload = {
+                    "generated_new": True,
+                    "id": str(new_sar.id),
+                    "status": new_sar.status,
+                    "created_at": new_sar.created_at.isoformat(),
+                    "message": None,
+                }
+            elif sar_decision.existing_sar is not None:
+                run.summary = f"No material change since the last SAR — existing SAR remains current. Risk Level: {audit_result.risk_level.upper()} (Score: {audit_result.risk_score}/100)."
+                sar_payload = {
+                    "generated_new": False,
+                    "id": str(sar_decision.existing_sar.id),
+                    "status": sar_decision.existing_sar.status,
+                    "created_at": sar_decision.existing_sar.created_at.isoformat(),
+                    "message": None,
+                }
             else:
-                # Routine confirmation — no new evidence rows, no timeline noise, no SAR.
-                report = RiskReport(
-                    id=uuid.uuid4(),
-                    company_id=company.id,
-                    monitoring_run_id=run.id,
-                    risk_score=audit_result.risk_score,
-                    risk_level=audit_result.risk_level,
-                    rationale=audit_result.rationale_summary
-                )
-                self.db.add(report)
-                run.summary = f"No material change. Risk Level: {audit_result.risk_level.upper()} (Score: {audit_result.risk_score}/100)."
+                run.summary = f"SAR threshold not met. Risk Level: {audit_result.risk_level.upper()} (Score: {audit_result.risk_score}/100)."
+                sar_payload = {
+                    "generated_new": False,
+                    "id": None,
+                    "status": None,
+                    "created_at": None,
+                    "message": sar_decision.message,
+                }
 
             run.status = "completed"
             run.completed_at = datetime.utcnow()
@@ -488,11 +664,13 @@ class AgentOrchestrator:
                 event_metadata={
                     "company_name": company.legal_name,
                     "risk_level": audit_result.risk_level,
-                    "material_change": change_result.material_change,
+                    "material_change": material_change_result.material_change_detected,
+                    "sar_generated": sar_decision.generate_new,
                 }
             ))
 
-            # Refresh the baseline for the next comparison, regardless of materiality.
+            # Refresh the baseline for the next comparison — always, regardless of
+            # the SAR decision, so scheduled sweeps keep the record current.
             state = self.db.get(CompanyAuditState, company.id)
             if state is None:
                 state = CompanyAuditState(company_id=company.id)
@@ -504,15 +682,16 @@ class AgentOrchestrator:
             state.last_news_hash = audit_result.news_hash
             state.last_entity_confidence = audit_result.entity_confidence
             state.last_audit_at = datetime.utcnow()
-            if change_result.material_change:
+            if sar_decision.generate_new:
                 state.last_sar_generated_at = datetime.utcnow()
                 state.last_sar_risk = audit_result.risk_level
 
             self.db.commit()
             logger.info(
-                "Audit finalized for %s (material_change=%s).",
+                "Audit finalized for %s (material_change=%s, sar_generated=%s).",
                 company.legal_name,
-                change_result.material_change,
+                material_change_result.material_change_detected,
+                sar_decision.generate_new,
             )
 
             return {
@@ -522,9 +701,10 @@ class AgentOrchestrator:
                 "risk_level": audit_result.risk_level,
                 "sanctions_hits": len(audit_result.sanctions_alerts),
                 "media_hits": len(audit_result.adverse_media_alerts),
-                "material_change": change_result.material_change,
-                "change_type": change_result.change_type,
-                "change_summary": change_result.change_summary,
+                "material_change": material_change_result.material_change_detected,
+                "change_type": material_change_result.change_type,
+                "change_summary": material_change_result.change_summary,
+                "sar": sar_payload,
             }
 
         except Exception as e:

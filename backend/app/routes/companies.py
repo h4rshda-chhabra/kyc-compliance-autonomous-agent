@@ -33,7 +33,9 @@ def _serialize_directory(entity: DirectoryCompany) -> dict:
         "legal_name": entity.name,
         "registration_number": None,
         "jurisdiction": entity.countries,
-        "industry": entity.source,
+        # entity.source is the sanctions list name (e.g. "OFAC SDN (CUBA)"), not an
+        # industry — the dataset has no industry field, so don't mislabel it as one.
+        "industry": None,
         "monitoring_status": "not_monitored",
         "risk_level": "unknown",
         "onboarded_at": None,

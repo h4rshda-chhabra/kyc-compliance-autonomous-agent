@@ -21,6 +21,7 @@ class AuditResult:
 
     sanctions_alerts: List[Dict[str, Any]] = field(default_factory=list)
     adverse_media_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    contamination_alerts: List[Dict[str, Any]] = field(default_factory=list)
     timeline_events_data: List[Dict[str, Any]] = field(default_factory=list)
 
     sanction_ids: List[str] = field(default_factory=list)

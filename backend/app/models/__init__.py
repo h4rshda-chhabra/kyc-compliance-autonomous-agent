@@ -14,6 +14,7 @@ from app.models.sar_report import SARReport
 from app.models.timeline_event import TimelineEvent
 from app.models.user import User
 from app.models.watchlist_match import WatchlistMatch
+from app.models.sanctions_sync_audit import SanctionsSyncAudit
 
 __all__ = [
     "AuditLog",
@@ -30,4 +31,5 @@ __all__ = [
     "TimelineEvent",
     "User",
     "WatchlistMatch",
+    "SanctionsSyncAudit",
 ]

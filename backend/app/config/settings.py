@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     monitoring_sweep_interval_minutes: int = 15
 
+    # SAR generation gate: a new SAR is only drafted when a sanctions match exists
+    # AND the calculated risk score meets/exceeds this threshold (0-100 scale).
+    sar_risk_threshold: float = 70.0
+
     # Logging
     log_level: str = "INFO"
 
