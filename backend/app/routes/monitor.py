@@ -42,7 +42,7 @@ def get_monitoring_run(run_id: uuid.UUID, db: Session = Depends(get_db)) -> dict
     run = db.get(MonitoringRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Monitoring run not found")
-        
+
     company = db.get(Company, run.company_id)
     company_name = company.legal_name if company else None
     return _serialize(run, company_name)
@@ -75,14 +75,12 @@ def trigger_manual_run(company_id: str, db: Session = Depends(get_db)) -> dict:
     try:
         result = run_company_audit(company_id=company.id, db=db, trigger_type="manual")
 
-        # Query the run to merge its details for any hook expecting a MonitoringRun
         run = db.get(MonitoringRun, uuid.UUID(result["run_id"]))
         if run:
             serialized_run = _serialize(run, company.legal_name)
-            # Add the AuditResult keys directly to serialized_run
             serialized_run.update(result)
             return serialized_run
-            
+
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -90,33 +88,19 @@ def trigger_manual_run(company_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/sync/history")
-def get_sync_history(db: Session = Depends(get_db)) -> list[dict]:
-    from app.models.sanctions_sync_audit import SanctionsSyncAudit
-    logs = db.query(SanctionsSyncAudit).order_by(SanctionsSyncAudit.sync_timestamp.desc()).all()
-    return [
-        {
-            "id": str(log.id),
-            "sync_timestamp": log.sync_timestamp,
-            "provider": log.provider,
-            "dataset_version": log.dataset_version,
-            "records_added": log.records_added,
-            "records_updated": log.records_updated,
-            "records_removed": log.records_removed,
-            "total_records": log.total_records,
-            "sync_duration_seconds": log.sync_duration_seconds,
-            "success": log.success,
-            "failure_reason": log.failure_reason,
-        }
-        for log in logs
-    ]
+@router.post("/watchlist/simulate")
+def simulate_watchlist_update(db: Session = Depends(get_db)) -> dict:
+    """Simulate a watchlist update for demonstration purposes.
 
-
-@router.post("/sync")
-def trigger_sanctions_sync(feed_url: str | None = None) -> dict:
-    from app.services.sync_sanctions import run_sanctions_sync
-    result = run_sanctions_sync(feed_url=feed_url)
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["error"])
-    return result
-
+    Inserts predefined demo sanctions entries directly into sanctions_lookup.db,
+    triggers the SanctionsImpactAnalyzer to find affected companies, and runs
+    targeted re-screening for those companies.
+    """
+    try:
+        from app.services.watchlist_service import simulate_watchlist_update as _simulate
+        result = _simulate(db=db)
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

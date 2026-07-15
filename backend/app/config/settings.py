@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     app_name: str = "Continuous KYC Autonomous Auditor"
     environment: str = "development"
     debug: bool = True
-    demo_mode: bool = False
     api_v1_prefix: str = "/api/v1"
 
     # CORS

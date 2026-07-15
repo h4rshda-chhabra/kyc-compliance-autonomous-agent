@@ -44,45 +44,25 @@ export function useTriggerMonitoringRun() {
   });
 }
 
-export interface SanctionsSyncLog {
-  id: string;
-  sync_timestamp: string;
-  provider: string;
-  dataset_version: string;
-  records_added: number;
-  records_updated: number;
-  records_removed: number;
-  total_records: number;
-  sync_duration_seconds: number;
+export interface WatchlistSimulateResult {
   success: boolean;
-  failure_reason: string | null;
+  entities_inserted: number;
+  affected_companies: number;
+  affected_company_ids: string[];
 }
 
-export function useSanctionsSyncHistory() {
-  return useQuery({
-    queryKey: ["sanctions-sync-history"],
-    queryFn: async () => {
-      const { data } = await apiClient.get<SanctionsSyncLog[]>("/monitor/sync/history");
-      return data;
-    },
-  });
-}
-
-export function useTriggerSanctionsSync() {
+export function useSimulateWatchlistUpdate() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (feedUrl?: string) => {
-      const { data } = await apiClient.post<any>("/monitor/sync", null, {
-        params: feedUrl ? { feed_url: feedUrl } : {},
-      });
+    mutationFn: async () => {
+      const { data } = await apiClient.post<WatchlistSimulateResult>("/monitor/watchlist/simulate");
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sanctions-sync-history"] });
       queryClient.invalidateQueries({ queryKey: ["monitoring-runs"] });
       queryClient.invalidateQueries({ queryKey: ["companies"] });
       queryClient.invalidateQueries({ queryKey: ["sar-reports"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
     },
   });
 }
-
