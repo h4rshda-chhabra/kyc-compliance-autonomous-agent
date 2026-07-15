@@ -23,8 +23,11 @@ SWEEP_JOB_ID = "continuous_monitoring_sweep"
 def run_monitoring_sweep(company_ids: list[str] | None = None) -> None:
     """Re-runs the audit for every company (or a targeted subset) that has completed at least one scan.
 
-    Companies still in "onboarding" (never scanned) are skipped.
+    When running the standard periodic scheduler sweep (company_ids is None), this filters
+    companies to only run re-audits for those that are due for news monitoring based on their
+    configured monitoring policy (news_monitoring_enabled and news_monitoring_interval_minutes).
     """
+    from datetime import datetime, timedelta, UTC
     from app.orchestrator.pipeline import run_company_audit
 
     db = SessionLocal()
@@ -34,7 +37,32 @@ def run_monitoring_sweep(company_ids: list[str] | None = None) -> None:
             query = query.filter(Company.id.in_(company_ids))
         
         companies = query.all()
-        logger.info("Continuous monitoring sweep starting for %d company(ies) (Targeted=%s).", len(companies), company_ids is not None)
+        
+        # Apply scheduling filter if it is the routine scheduled background sweep
+        if company_ids is None:
+            now = datetime.now(UTC)
+            due_companies = []
+            for company in companies:
+                if not company.news_monitoring_enabled:
+                    continue
+                if company.last_news_check_at is None:
+                    due_companies.append(company)
+                else:
+                    # Make sure comparison is timezone-aware
+                    last_check = company.last_news_check_at
+                    if last_check.tzinfo is None:
+                        last_check = last_check.replace(tzinfo=UTC)
+                    
+                    elapsed = now - last_check
+                    if elapsed >= timedelta(minutes=company.news_monitoring_interval_minutes):
+                        due_companies.append(company)
+            companies = due_companies
+
+        logger.info(
+            "Continuous monitoring sweep starting for %d company(ies) (Targeted=%s).",
+            len(companies),
+            company_ids is not None,
+        )
 
         for company in companies:
             try:
@@ -43,6 +71,7 @@ def run_monitoring_sweep(company_ids: list[str] | None = None) -> None:
                 logger.exception("Scheduled audit failed for company %s", company.id)
     finally:
         db.close()
+
 
 
 

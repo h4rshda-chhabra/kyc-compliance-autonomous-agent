@@ -686,6 +686,9 @@ class AgentOrchestrator:
                 state.last_sar_generated_at = datetime.utcnow()
                 state.last_sar_risk = audit_result.risk_level
 
+            # Update news check timestamp on the company itself
+            company.last_news_check_at = datetime.utcnow()
+
             self.db.commit()
             logger.info(
                 "Audit finalized for %s (material_change=%s, sar_generated=%s).",

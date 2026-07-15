@@ -20,6 +20,9 @@ export interface Company {
   /** null until the company has been scanned (no Postgres row yet). */
   created_at: string | null;
   updated_at: string | null;
+  news_monitoring_enabled?: boolean;
+  news_monitoring_interval_minutes?: number;
+  last_news_check_at?: string | null;
 }
 
 export interface MonitoringRun {

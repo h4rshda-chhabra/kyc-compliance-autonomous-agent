@@ -18,10 +18,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RiskGauge } from "@/components/charts/RiskGauge";
-import { useCompany } from "@/hooks/useCompanies";
+import { useCompany, useUpdateCompanyCadence } from "@/hooks/useCompanies";
 import { useCompanyEvidence, useCompanyRiskReport, useCompanyTimeline } from "@/hooks/useReports";
 import { useTriggerMonitoringRun } from "@/hooks/useMonitoringRuns";
 import { useSarReports } from "@/hooks/useSarReports";
+
 
 function DetailRow({
   icon: Icon,
@@ -46,56 +47,149 @@ function DetailRow({
 function OverviewTab({ companyId }: { companyId: string }) {
   const { data: company } = useCompany(companyId);
   const { data: riskReport, isLoading: riskLoading } = useCompanyRiskReport(companyId);
+  const updateCadence = useUpdateCompanyCadence();
 
   if (!company) return null;
 
   const hasAssessment = riskReport && riskReport.risk_level !== "unknown";
 
-  return (
-    <div className="grid gap-6 lg:grid-cols-3">
-      <Card className="lg:col-span-1">
-        <CardHeader>
-          <CardTitle>Company profile</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <DetailRow icon={Hash} label="Registration number" value={company.registration_number || "—"} />
-          <DetailRow icon={MapPin} label="Jurisdiction" value={company.jurisdiction || "—"} />
-          <DetailRow icon={Building2} label="Industry" value={company.industry || "—"} />
-          <DetailRow
-            icon={CalendarClock}
-            label="Onboarded"
-            value={company.onboarded_at ? new Date(company.onboarded_at).toLocaleDateString() : "—"}
-          />
-        </CardContent>
-      </Card>
+  const handleEnabledChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    updateCadence.mutate({
+      companyId,
+      news_monitoring_enabled: e.target.checked,
+    });
+  };
 
-      <Card className="lg:col-span-2">
-        <CardHeader>
-          <CardTitle>Risk assessment</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {riskLoading ? (
-            <Skeleton className="mx-auto h-32 w-56" />
-          ) : hasAssessment ? (
-            <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-center sm:gap-10">
-              <RiskGauge score={riskReport.risk_score} />
-              {riskReport.rationale ? (
-                <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-                  {riskReport.rationale}
-                </p>
-              ) : null}
-            </div>
-          ) : (
-            <EmptyState
-              title="No risk assessment yet"
-              description="A risk score appears here once monitoring has run for this company."
+  const handleIntervalChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    updateCadence.mutate({
+      companyId,
+      news_monitoring_interval_minutes: parseInt(e.target.value, 10),
+    });
+  };
+
+  // Calculate next check time
+  let nextCheckStr = "—";
+  if (company.news_monitoring_enabled) {
+    if (company.last_news_check_at) {
+      const lastCheck = new Date(company.last_news_check_at);
+      const nextCheck = new Date(lastCheck.getTime() + (company.news_monitoring_interval_minutes || 1440) * 60000);
+      nextCheckStr = nextCheck.toLocaleString();
+    } else {
+      nextCheckStr = "Pending first scan";
+    }
+  } else {
+    nextCheckStr = "Monitoring disabled";
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-1">
+          <CardHeader>
+            <CardTitle>Company profile</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <DetailRow icon={Hash} label="Registration number" value={company.registration_number || "—"} />
+            <DetailRow icon={MapPin} label="Jurisdiction" value={company.jurisdiction || "—"} />
+            <DetailRow icon={Building2} label="Industry" value={company.industry || "—"} />
+            <DetailRow
+              icon={CalendarClock}
+              label="Onboarded"
+              value={company.onboarded_at ? new Date(company.onboarded_at).toLocaleDateString() : "—"}
             />
-          )}
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Risk assessment</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {riskLoading ? (
+              <Skeleton className="mx-auto h-32 w-56" />
+            ) : hasAssessment ? (
+              <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-center sm:gap-10">
+                <RiskGauge score={riskReport.risk_score} />
+                {riskReport.rationale ? (
+                  <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
+                    {riskReport.rationale}
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <EmptyState
+                title="No risk assessment yet"
+                description="A risk score appears here once monitoring has run for this company."
+              />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Continuous Monitoring Cadence Settings</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-6 md:grid-cols-3">
+          <div className="flex items-center gap-3 space-x-2 rounded-md border p-4">
+            <input
+              type="checkbox"
+              id="news-monitor-toggle"
+              checked={company.news_monitoring_enabled ?? true}
+              onChange={handleEnabledChange}
+              disabled={updateCadence.isPending}
+              className="size-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <div className="flex-1 space-y-1">
+              <label
+                htmlFor="news-monitor-toggle"
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+              >
+                Enable News Monitoring
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Run background audits periodically for this company.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Audit Frequency Interval</label>
+            <select
+              value={company.news_monitoring_interval_minutes ?? 1440}
+              onChange={handleIntervalChange}
+              disabled={!(company.news_monitoring_enabled ?? true) || updateCadence.isPending}
+              className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="15">15 Minutes (Immediate High-Risk Suspect)</option>
+              <option value="30">30 Minutes</option>
+              <option value="60">1 Hour (Medium Risk Standard)</option>
+              <option value="360">6 Hours</option>
+              <option value="720">12 Hours</option>
+              <option value="1440">24 Hours (Low Risk Standard)</option>
+            </select>
+          </div>
+
+          <div className="rounded-md border p-4 space-y-2">
+            <div>
+              <span className="text-xs text-muted-foreground">Last Evaluated:</span>
+              <div className="text-sm font-semibold text-foreground">
+                {company.last_news_check_at ? new Date(company.last_news_check_at).toLocaleString() : "Never checked"}
+              </div>
+            </div>
+            <div>
+              <span className="text-xs text-muted-foreground">Estimated Next Scan:</span>
+              <div className="text-sm font-semibold text-primary">
+                {nextCheckStr}
+              </div>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
   );
 }
+
 
 function TimelineTab({ companyId }: { companyId: string }) {
   const { data: events, isLoading, isError, refetch } = useCompanyTimeline(companyId);

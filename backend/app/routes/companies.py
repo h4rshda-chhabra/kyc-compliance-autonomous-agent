@@ -23,6 +23,9 @@ def _serialize_scanned(company: Company) -> dict:
         "onboarded_at": company.onboarded_at,
         "created_at": company.created_at,
         "updated_at": company.updated_at,
+        "news_monitoring_enabled": company.news_monitoring_enabled,
+        "news_monitoring_interval_minutes": company.news_monitoring_interval_minutes,
+        "last_news_check_at": company.last_news_check_at.isoformat() if company.last_news_check_at else None,
     }
 
 
@@ -87,3 +90,27 @@ def create_custom_company(payload: CompanyCreate, db: Session = Depends(get_db))
     db.commit()
     db.refresh(company)
     return _serialize_scanned(company)
+
+
+from pydantic import BaseModel
+
+class UpdateCadenceRequest(BaseModel):
+    news_monitoring_enabled: bool | None = None
+    news_monitoring_interval_minutes: int | None = None
+
+
+@router.patch("/{company_id}/cadence")
+def update_company_cadence(company_id: str, payload: UpdateCadenceRequest, db: Session = Depends(get_db)) -> dict:
+    company = db.get(Company, company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+        
+    if payload.news_monitoring_enabled is not None:
+        company.news_monitoring_enabled = payload.news_monitoring_enabled
+    if payload.news_monitoring_interval_minutes is not None:
+        company.news_monitoring_interval_minutes = payload.news_monitoring_interval_minutes
+        
+    db.commit()
+    db.refresh(company)
+    return _serialize_scanned(company)
+

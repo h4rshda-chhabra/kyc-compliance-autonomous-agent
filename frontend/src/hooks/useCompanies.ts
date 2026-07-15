@@ -41,3 +41,29 @@ export function useCreateCompany() {
     },
   });
 }
+
+export function useUpdateCompanyCadence() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      companyId,
+      news_monitoring_enabled,
+      news_monitoring_interval_minutes,
+    }: {
+      companyId: string;
+      news_monitoring_enabled?: boolean;
+      news_monitoring_interval_minutes?: number;
+    }) => {
+      const { data } = await apiClient.patch<Company>(`/companies/${companyId}/cadence`, {
+        news_monitoring_enabled,
+        news_monitoring_interval_minutes,
+      });
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["companies", data.id] });
+      queryClient.invalidateQueries({ queryKey: ["companies"] });
+    },
+  });
+}
+

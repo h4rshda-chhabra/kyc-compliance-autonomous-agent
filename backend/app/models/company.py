@@ -31,3 +31,9 @@ class Company(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    # Risk-based dynamic scheduling fields
+    news_monitoring_enabled: Mapped[bool] = mapped_column(default=True)
+    news_monitoring_interval_minutes: Mapped[int] = mapped_column(default=1440)  # Default: 24 hours (1440 mins)
+    last_news_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
